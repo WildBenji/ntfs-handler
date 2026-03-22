@@ -1,0 +1,59 @@
+#compdef ntfs
+# zsh completion for ntfs-handler
+# https://github.com/WildBenji/ntfs-handler
+
+_ntfs() {
+    local state
+
+    _arguments \
+        '(-h --help)'{-h,--help}'[Show help]' \
+        '(-V --version)'{-V,--version}'[Show version]' \
+        '1: :->command' \
+        '*: :->args'
+
+    case $state in
+        command)
+            local commands
+            commands=(
+                'list:List all connected NTFS volumes'
+                'mount:Mount an NTFS volume'
+                'unmount:Unmount a mounted NTFS volume'
+                'eject:Unmount and eject the physical disk'
+                'status:Show currently mounted NTFS volumes'
+                'daemon:Manage the auto-mount daemon'
+                'doctor:Check system health and dependencies'
+                'install:Copy ntfs to /usr/local/bin'
+                'version:Show version'
+                'help:Show help'
+            )
+            _describe 'command' commands
+            ;;
+
+        args)
+            case $words[2] in
+                mount|m)
+                    _arguments \
+                        '(-v --visible)'{-v,--visible}'[Show in Finder sidebar]' \
+                        '(-r --readonly)'{-r,--readonly}'[Mount read-only]' \
+                        '(-a --all)'{-a,--all}'[Mount all detected volumes]'
+                    ;;
+                unmount|umount|u|eject|e)
+                    _arguments \
+                        '(-e --eject)'{-e,--eject}'[Also eject the physical disk]'
+                    ;;
+                daemon)
+                    local subcommands
+                    subcommands=(
+                        'install:Enable auto-mount on plug-in (requires sudo)'
+                        'uninstall:Remove the auto-mount daemon (requires sudo)'
+                        'status:Check if daemon is running'
+                        'logs:Follow daemon logs (requires sudo)'
+                    )
+                    _describe 'daemon subcommand' subcommands
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_ntfs "$@"

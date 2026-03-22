@@ -1,0 +1,3 @@
+# SC2059: color variables in printf format strings are intentional — they
+# never contain printf format specifiers (%, etc.), only ANSI escape codes.
+disable=SC2059

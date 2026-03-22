@@ -1,0 +1,789 @@
+#!/bin/bash
+# ntfs — Free NTFS read/write for macOS
+# https://github.com/WildBenji/ntfs-handler
+# Public domain — no restrictions on use.
+
+set -euo pipefail
+
+VERSION="0.2.0"
+MOUNT_RECORD="$HOME/.ntfs-mounts"
+DAEMON_MOUNT_RECORD="/var/run/ntfs-daemon-mounts"
+DAEMON_PLIST="/Library/LaunchDaemons/com.ntfshandler.automount.plist"
+DAEMON_LOG="/var/log/ntfs-daemon.log"
+
+# ── Colors ───────────────────────────────────────────────────────────────────
+if [ -t 1 ] && [ "${NO_COLOR:-}" = "" ]; then
+    RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
+    BLUE=$'\033[0;34m'; CYAN=$'\033[0;36m'; BOLD=$'\033[1m'; DIM=$'\033[2m'; NC=$'\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; BOLD=''; DIM=''; NC=''
+fi
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+info() { printf "${BLUE}=>${NC} %s\n" "$*"; }
+ok()   { printf "${GREEN}✓${NC}  %s\n" "$*"; }
+warn() { printf "${YELLOW}▲${NC}  %s\n" "$*"; }
+err()  { printf "${RED}✗${NC}  %s\n" "$*" >&2; }
+die()  { err "$*"; exit 1; }
+
+# ── Dependency Check ─────────────────────────────────────────────────────────
+check_deps() {
+    local all_ok=1
+    if ! command -v ntfs-3g &>/dev/null; then
+        err "ntfs-3g not found"
+        printf "  Install: ${BOLD}brew install ntfs-3g${NC}\n" >&2
+        all_ok=0
+    fi
+    if ! { [ -d /Library/Filesystems/macfuse.fs ] || [ -d /Library/Filesystems/osxfuse.fs ]; }; then
+        err "macFUSE not detected"
+        printf "  Install: https://osxfuse.github.io/\n" >&2
+        all_ok=0
+    fi
+    [ "$all_ok" -eq 1 ]
+}
+
+# ── ntfs-3g path detection ────────────────────────────────────────────────────
+find_ntfs3g() {
+    local c
+    for c in \
+        "$(command -v ntfs-3g 2>/dev/null || true)" \
+        /opt/homebrew/bin/ntfs-3g \
+        /usr/local/bin/ntfs-3g \
+        /usr/bin/ntfs-3g; do
+        [ -x "$c" ] && echo "$c" && return 0
+    done
+    return 1
+}
+
+# ── diskutil plist helper ─────────────────────────────────────────────────────
+# Use structured plist output so macOS updates to diskutil's human-readable
+# format don't silently break volume detection.
+diskutil_plist_key() {
+    diskutil info -plist "$1" 2>/dev/null | plutil -extract "$2" raw - 2>/dev/null || true
+}
+
+# ── NTFS Volume Detection ─────────────────────────────────────────────────────
+# Populates globals: NTFS_DISKS  NTFS_VOLNAMES  NTFS_SIZES
+NTFS_DISKS=()
+NTFS_VOLNAMES=()
+NTFS_SIZES=()
+
+find_ntfs_volumes() {
+    NTFS_DISKS=(); NTFS_VOLNAMES=(); NTFS_SIZES=()
+    local disk_id fs_type vol_name size_bytes size_str
+
+    while IFS= read -r disk_id; do
+        [ -z "$disk_id" ] && continue
+        diskutil info "$disk_id" &>/dev/null || continue
+
+        fs_type=$(diskutil_plist_key "$disk_id" FilesystemType)
+        [[ "$fs_type" == *ntfs* ]] || continue
+
+        vol_name=$(diskutil_plist_key "$disk_id" VolumeName)
+        if [ -z "$vol_name" ] || [ "$vol_name" = "Not applicable" ]; then
+            vol_name="NTFS Volume"
+        fi
+
+        size_bytes=$(diskutil_plist_key "$disk_id" TotalSize)
+        size_str=$(awk -v b="${size_bytes:-0}" 'BEGIN {
+            if (b >= 1e12)     printf "%.1f TB", b/1e12
+            else if (b >= 1e9) printf "%.1f GB", b/1e9
+            else if (b >= 1e6) printf "%.1f MB", b/1e6
+            else               printf "%d B",    b }')
+        [ -z "$size_str" ] && size_str="?"
+
+        NTFS_DISKS+=("$disk_id")
+        NTFS_VOLNAMES+=("$vol_name")
+        NTFS_SIZES+=("$size_str")
+    done < <(diskutil list 2>/dev/null | awk '/Microsoft Basic Data|Windows_NTFS/ {print $NF}')
+}
+
+# ── Mount Record ──────────────────────────────────────────────────────────────
+# Populates globals: REC_DISKS  REC_MOUNTS
+REC_DISKS=()
+REC_MOUNTS=()
+
+load_mount_record() {
+    REC_DISKS=(); REC_MOUNTS=()
+    local f disk_id mount_point already j
+
+    for f in "$MOUNT_RECORD" "$DAEMON_MOUNT_RECORD"; do
+        [ -f "$f" ] || continue
+        while IFS=$'\t' read -r disk_id mount_point; do
+            [ -n "$disk_id" ] && [ -n "$mount_point" ] || continue
+            already=0
+            for ((j=0; j<${#REC_DISKS[@]}; j++)); do
+                [ "${REC_DISKS[$j]}" = "$disk_id" ] && { already=1; break; }
+            done
+            [ "$already" -eq 0 ] && {
+                REC_DISKS+=("$disk_id")
+                REC_MOUNTS+=("$mount_point")
+            }
+        done < "$f"
+    done
+}
+
+record_mount() {
+    local disk_id="$1" mount_point="$2" record_file="${3:-$MOUNT_RECORD}"
+    local tmp; tmp=$(mktemp)
+    [ -f "$record_file" ] && grep -v "^${disk_id}	" "$record_file" > "$tmp" 2>/dev/null || true
+    printf '%s\t%s\n' "$disk_id" "$mount_point" >> "$tmp"
+    mv "$tmp" "$record_file"
+}
+
+record_unmount() {
+    local disk_id="$1" f tmp
+    for f in "$MOUNT_RECORD" "$DAEMON_MOUNT_RECORD"; do
+        [ -f "$f" ] || continue
+        tmp=$(mktemp)
+        grep -v "^${disk_id}	" "$f" > "$tmp" 2>/dev/null || true
+        mv "$tmp" "$f" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; continue; }
+        [ -f "$f" ] && [ ! -s "$f" ] && rm -f "$f"
+    done
+}
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+safe_name() {
+    printf '%s' "$1" | tr -cd '[:alnum:] ._-' | tr ' ' '_' \
+        | sed 's/^[._-]*//; s/[._-]*$//'
+}
+
+get_mount_point() {
+    local vol_name="$1" disk_id="$2"
+    local base safe
+    safe=$(safe_name "$vol_name")
+    base="/Volumes/${safe:-$disk_id}"
+    local mp="$base" i=2
+    while [ -d "$mp" ] && mount 2>/dev/null | grep -qF " on $mp "; do
+        mp="${base}_${i}"; i=$((i+1))
+    done
+    echo "$mp"
+}
+
+mount_status() {
+    # Returns: "rw", "ro", or ""
+    local disk_id="$1"
+    local mline
+    mline=$(mount 2>/dev/null | grep "^/dev/${disk_id} on " || true)
+    [ -z "$mline" ] && return 0
+    if echo "$mline" | grep -q "read-only"; then
+        echo "ro"
+    else
+        echo "rw"
+    fi
+}
+
+# ── do_mount ─────────────────────────────────────────────────────────────────
+do_mount() {
+    local disk_id="$1" vol_name="$2" visible="${3:-}" readonly="${4:-}" rec_file="${5:-$MOUNT_RECORD}"
+    local device="/dev/$disk_id"
+    local mount_point ntfs3g
+
+    ntfs3g=$(find_ntfs3g) || die "ntfs-3g not found — run: ntfs doctor"
+    mount_point=$(get_mount_point "$vol_name" "$disk_id")
+
+    printf "${BLUE}=>${NC}  Mounting ${BOLD}%s${NC} (%s) → %s\n" "$vol_name" "$disk_id" "$mount_point"
+    sudo mkdir -p "$mount_point"
+
+    # If macOS has already auto-mounted the volume (read-only), kick it first.
+    # Use 'force' so it works even if Finder has it open.
+    if mount 2>/dev/null | grep -qF "/dev/$disk_id on"; then
+        info "Releasing macOS read-only mount..."
+        if ! sudo diskutil unmount force "$disk_id" &>/dev/null; then
+            err "Could not release macOS mount on $disk_id — is Finder using it?"
+            sudo rmdir "$mount_point" 2>/dev/null || true
+            return 1
+        fi
+    fi
+
+    # volname sets what Finder displays; strip commas (option delimiter) from the name
+    local volname_opt="${vol_name//,/}"
+    local opts="local,allow_other,auto_xattr,windows_names,volname=${volname_opt}"
+    [ -n "$readonly" ] && opts="${opts},ro"
+    [ -z "$visible" ]  && opts="${opts},nobrowse"
+
+    if sudo "$ntfs3g" "$device" "$mount_point" -o "$opts" 2>/dev/null; then
+        ok "Mounted ${BOLD}$vol_name${NC} at $mount_point"
+        [ -z "$visible" ] && printf "    ${DIM}Hidden from Finder — Go → Go to Folder (⌘⇧G) → %s${NC}\n" "$mount_point"
+        record_mount "$disk_id" "$mount_point" "$rec_file"
+        return 0
+    elif sudo "$ntfs3g" "$device" "$mount_point" -o "${opts},recover" 2>/dev/null; then
+        warn "Mounted ${BOLD}$vol_name${NC} with recovery (volume was not safely ejected from Windows)"
+        [ -z "$visible" ] && printf "    ${DIM}Hidden from Finder — Go → Go to Folder (⌘⇧G) → %s${NC}\n" "$mount_point"
+        record_mount "$disk_id" "$mount_point" "$rec_file"
+        return 0
+    else
+        err "Failed to mount $vol_name ($disk_id)"
+        sudo rmdir "$mount_point" 2>/dev/null || true
+        return 1
+    fi
+}
+
+# ── do_unmount ────────────────────────────────────────────────────────────────
+do_unmount() {
+    local disk_id="$1" mount_point="$2" eject="${3:-}"
+
+    # If already not mounted, just clean the record — don't report failure
+    if ! mount 2>/dev/null | grep -qF " on $mount_point "; then
+        warn "$mount_point is not mounted — cleaning stale record"
+        record_unmount "$disk_id"
+        sudo rmdir "$mount_point" 2>/dev/null || true
+        return 0
+    fi
+
+    printf "${BLUE}=>${NC}  Unmounting ${BOLD}%s${NC}...\n" "$mount_point"
+
+    # umount blocks until ntfs-3g FUSE process fully exits — required for eject to work.
+    # diskutil unmount force is faster but returns before FUSE teardown, breaking eject.
+    if sudo umount "$mount_point" &>/dev/null \
+        || sudo diskutil unmount force "$disk_id" &>/dev/null; then
+        ok "Unmounted $mount_point"
+        sudo rmdir "$mount_point" 2>/dev/null || true
+        record_unmount "$disk_id"
+
+        if [ -n "$eject" ]; then
+            local parent
+            parent=$(echo "$disk_id" | sed 's/s[0-9]*$//; s/p[0-9]*$//')
+            if [ "$parent" != "$disk_id" ] && diskutil info "$parent" &>/dev/null; then
+                # Immediately release any Disk Arbitration auto-remounts that
+                # race us after umount, then eject to send the spin-down command.
+                sudo diskutil unmountDisk force "$parent" &>/dev/null || true
+                if sudo diskutil eject "$parent" &>/dev/null; then
+                    ok "Ejected ${BOLD}$(basename "$mount_point")${NC} — safe to unplug"
+                elif ! diskutil info "$parent" &>/dev/null; then
+                    # Disk disappeared — macOS already ejected it
+                    ok "Ejected ${BOLD}$(basename "$mount_point")${NC} — safe to unplug"
+                else
+                    warn "Could not eject $(basename "$mount_point") — unplug manually when the activity light stops"
+                fi
+            fi
+        fi
+        return 0
+    else
+        err "Failed to unmount $mount_point"
+        return 1
+    fi
+}
+
+# ── cmd: list ─────────────────────────────────────────────────────────────────
+cmd_list() {
+    find_ntfs_volumes
+
+    if [ ${#NTFS_DISKS[@]} -eq 0 ]; then
+        warn "No NTFS volumes detected. Connect a drive and try again."
+        return 0
+    fi
+
+    echo
+    printf "  ${BOLD}%-14s %-28s %-10s %s${NC}\n" "DISK" "VOLUME" "SIZE" "STATUS"
+    printf "  %-14s %-28s %-10s %s\n" \
+        "──────────────" "────────────────────────────" "──────────" "──────────────"
+
+    local i disk vol size st status_str
+    for i in "${!NTFS_DISKS[@]}"; do
+        disk="${NTFS_DISKS[$i]}"; vol="${NTFS_VOLNAMES[$i]}"; size="${NTFS_SIZES[$i]}"
+        st=$(mount_status "$disk")
+        case "$st" in
+            rw) status_str="${GREEN}read-write${NC}" ;;
+            ro) status_str="${YELLOW}macOS read-only${NC}" ;;
+            *)  status_str="${DIM}not mounted${NC}" ;;
+        esac
+        printf "  ${CYAN}%-14s${NC} %-28s %-10s " "$disk" "$vol" "$size"
+        printf "${status_str}\n"
+    done
+    echo
+}
+
+# ── cmd: status ───────────────────────────────────────────────────────────────
+cmd_status() {
+    load_mount_record
+
+    if [ ${#REC_DISKS[@]} -eq 0 ]; then
+        warn "No NTFS volumes currently mounted via ntfs-handler."
+        info "Run ${BOLD}ntfs list${NC} to see available volumes."
+        return 0
+    fi
+
+    echo
+    local i disk mp stale=()
+    for i in "${!REC_DISKS[@]}"; do
+        disk="${REC_DISKS[$i]}"; mp="${REC_MOUNTS[$i]}"
+        if mount 2>/dev/null | grep -qF " on $mp "; then
+            printf "  ${GREEN}✓${NC}  ${BOLD}%s${NC}  ${DIM}(%s)${NC}\n" "$mp" "$disk"
+        else
+            printf "  ${RED}✗${NC}  ${BOLD}%s${NC}  ${DIM}(%s) — stale${NC}\n" "$mp" "$disk"
+            stale+=("$disk")
+        fi
+    done
+    echo
+
+    if [ ${#stale[@]} -gt 0 ]; then
+        info "Cleaning ${#stale[@]} stale record(s)..."
+        local d; for d in "${stale[@]}"; do record_unmount "$d"; done
+    fi
+}
+
+# ── cmd: mount ────────────────────────────────────────────────────────────────
+cmd_mount() {
+    local visible="" all_flag="" readonly="" direct_disks=()
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --visible|-v)  visible="1" ;;
+            --all|-a)      all_flag="1" ;;
+            --readonly|-r) readonly="1" ;;
+            disk*)         direct_disks+=("$1") ;;
+            -*)            die "Unknown option: $1" ;;
+            *)             die "Unexpected argument: $1" ;;
+        esac
+        shift
+    done
+
+    check_deps || exit 1
+    find_ntfs_volumes
+
+    if [ ${#NTFS_DISKS[@]} -eq 0 ]; then
+        warn "No NTFS volumes found. Make sure your drive is connected."
+        return 1
+    fi
+
+    # Direct disk IDs specified on command line
+    if [ ${#direct_disks[@]} -gt 0 ]; then
+        local target found i
+        for target in "${direct_disks[@]}"; do
+            found=0
+            for i in "${!NTFS_DISKS[@]}"; do
+                if [ "${NTFS_DISKS[$i]}" = "$target" ]; then
+                    do_mount "$target" "${NTFS_VOLNAMES[$i]}" "$visible" "$readonly"
+                    found=1; break
+                fi
+            done
+            [ "$found" -eq 0 ] && err "Not an NTFS volume: $target"
+        done
+        return 0
+    fi
+
+    # Mount all
+    if [ -n "$all_flag" ]; then
+        local mounted=0 failed=0 i
+        for i in "${!NTFS_DISKS[@]}"; do
+            if [ "$(mount_status "${NTFS_DISKS[$i]}")" = "rw" ]; then
+                warn "${NTFS_VOLNAMES[$i]} is already mounted read-write — skipping"
+                continue
+            fi
+            do_mount "${NTFS_DISKS[$i]}" "${NTFS_VOLNAMES[$i]}" "$visible" "$readonly" \
+                && mounted=$((mounted+1)) || failed=$((failed+1)) || true
+        done
+        echo
+        [ $mounted -gt 0 ] && ok "$mounted volume(s) mounted"
+        [ $failed  -gt 0 ] && warn "$failed volume(s) failed"
+        return 0
+    fi
+
+    # Interactive
+    printf "\n  ${BOLD}NTFS Volumes${NC}\n\n"
+    local i disk vol size st st_label
+    for i in "${!NTFS_DISKS[@]}"; do
+        disk="${NTFS_DISKS[$i]}"; vol="${NTFS_VOLNAMES[$i]}"; size="${NTFS_SIZES[$i]}"
+        st=$(mount_status "$disk")
+        st_label=""
+        [ "$st" = "rw" ] && st_label=" ${GREEN}[mounted rw]${NC}"
+        [ "$st" = "ro" ] && st_label=" ${YELLOW}[macOS read-only — will be released]${NC}"
+        printf "  ${CYAN}%d)${NC}  %-28s ${DIM}%s, %s${NC}%b\n" \
+            $((i+1)) "$vol" "$disk" "$size" "$st_label"
+    done
+    echo
+    printf "  Select volumes to mount (space-separated, 'a' for all): "
+
+    local input choices=()
+    read -r input
+    if [ "$input" = "a" ] || [ "$input" = "all" ]; then
+        for i in "${!NTFS_DISKS[@]}"; do choices+=($((i+1))); done
+    else
+        read -r -a choices <<< "$input"
+    fi
+
+    local mounted=0 failed=0 choice idx
+    for choice in "${choices[@]}"; do
+        if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#NTFS_DISKS[@]}" ]; then
+            err "Invalid selection: $choice (valid: 1–${#NTFS_DISKS[@]})"
+            failed=$((failed+1)); continue
+        fi
+        idx=$((choice-1))
+        if [ "$(mount_status "${NTFS_DISKS[$idx]}")" = "rw" ]; then
+            warn "${NTFS_VOLNAMES[$idx]} is already mounted read-write"
+            failed=$((failed+1)); continue
+        fi
+        do_mount "${NTFS_DISKS[$idx]}" "${NTFS_VOLNAMES[$idx]}" "$visible" "$readonly" \
+            && mounted=$((mounted+1)) || failed=$((failed+1)) || true
+    done
+
+    echo
+    [ $mounted -gt 0 ] && ok "$mounted volume(s) mounted"
+    [ $failed  -gt 0 ] && warn "$failed volume(s) failed"
+}
+
+# ── cmd: unmount ──────────────────────────────────────────────────────────────
+cmd_unmount() {
+    local eject="" direct_disks=()
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --eject|-e) eject="1" ;;
+            disk*)      direct_disks+=("$1") ;;
+            -*)         die "Unknown option: $1" ;;
+            *)          die "Unexpected argument: $1" ;;
+        esac
+        shift
+    done
+
+    load_mount_record
+
+    if [ ${#REC_DISKS[@]} -eq 0 ]; then
+        warn "No mounted NTFS volumes tracked. Nothing to unmount."
+        return 0
+    fi
+
+    # Remove stale records before showing the menu
+    local i stale=()
+    for i in "${!REC_DISKS[@]}"; do
+        mount 2>/dev/null | grep -qF " on ${REC_MOUNTS[$i]} " || stale+=("${REC_DISKS[$i]}")
+    done
+    if [ ${#stale[@]} -gt 0 ]; then
+        local d; for d in "${stale[@]}"; do record_unmount "$d"; done
+        load_mount_record
+    fi
+
+    if [ ${#REC_DISKS[@]} -eq 0 ]; then
+        warn "No mounted NTFS volumes tracked. Nothing to unmount."
+        return 0
+    fi
+
+    # Direct disk IDs
+    if [ ${#direct_disks[@]} -gt 0 ]; then
+        local target found i
+        for target in "${direct_disks[@]}"; do
+            found=0
+            for i in "${!REC_DISKS[@]}"; do
+                if [ "${REC_DISKS[$i]}" = "$target" ]; then
+                    do_unmount "$target" "${REC_MOUNTS[$i]}" "$eject"
+                    found=1; break
+                fi
+            done
+            [ "$found" -eq 0 ] && err "Not in mount record: $target"
+        done
+        return 0
+    fi
+
+    # Interactive
+    printf "\n  ${BOLD}Mounted NTFS Volumes${NC}\n\n"
+    local i
+    for i in "${!REC_DISKS[@]}"; do
+        printf "  ${CYAN}%d)${NC}  %-35s ${DIM}(%s)${NC}\n" \
+            $((i+1)) "${REC_MOUNTS[$i]}" "${REC_DISKS[$i]}"
+    done
+    echo
+    printf "  Select volumes to unmount (space-separated, 'a' for all): "
+
+    local input choices=()
+    read -r input
+    if [ "$input" = "a" ] || [ "$input" = "all" ]; then
+        for i in "${!REC_DISKS[@]}"; do choices+=($((i+1))); done
+    else
+        read -r -a choices <<< "$input"
+    fi
+
+    local unmounted=0 failed=0 choice idx
+    for choice in "${choices[@]}"; do
+        if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#REC_DISKS[@]}" ]; then
+            err "Invalid selection: $choice (valid: 1–${#REC_DISKS[@]})"
+            failed=$((failed+1)); continue
+        fi
+        idx=$((choice-1))
+        do_unmount "${REC_DISKS[$idx]}" "${REC_MOUNTS[$idx]}" "$eject" \
+            && unmounted=$((unmounted+1)) || failed=$((failed+1)) || true
+    done
+
+    echo
+    [ $unmounted -gt 0 ] && ok "$unmounted volume(s) unmounted"
+    [ $failed    -gt 0 ] && warn "$failed volume(s) failed"
+}
+
+# ── cmd: eject ────────────────────────────────────────────────────────────────
+cmd_eject() {
+    cmd_unmount --eject "$@"
+}
+
+# ── cmd: doctor ───────────────────────────────────────────────────────────────
+cmd_doctor() {
+    printf "\n${BOLD}ntfs-handler Doctor${NC}\n\n"
+
+    if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
+        printf "  ${GREEN}✓${NC}  Bash %s\n" "$BASH_VERSION"
+    else
+        printf "  ${YELLOW}▲${NC}  Bash %s — brew install bash recommended\n" "$BASH_VERSION"
+    fi
+
+    if find_ntfs3g &>/dev/null; then
+        printf "  ${GREEN}✓${NC}  ntfs-3g at %s\n" "$(find_ntfs3g)"
+    else
+        printf "  ${RED}✗${NC}  ntfs-3g not found\n"
+        printf "       Install: ${BOLD}brew install ntfs-3g${NC}\n"
+    fi
+
+    if [ -d /Library/Filesystems/macfuse.fs ] || [ -d /Library/Filesystems/osxfuse.fs ]; then
+        printf "  ${GREEN}✓${NC}  macFUSE installed\n"
+    else
+        printf "  ${RED}✗${NC}  macFUSE not found\n"
+        printf "       Install: https://osxfuse.github.io/\n"
+    fi
+
+    local sip
+    sip=$(csrutil status 2>/dev/null | awk '{print $NF}' | tr -d '.')
+    if [ "$sip" = "enabled" ]; then
+        printf "  ${YELLOW}▲${NC}  SIP enabled — approve macFUSE in System Settings → Privacy & Security\n"
+    else
+        printf "  ${GREEN}✓${NC}  SIP: %s\n" "$sip"
+    fi
+
+    if sudo launchctl list 2>/dev/null | grep -q "ntfshandler"; then
+        printf "  ${GREEN}✓${NC}  Auto-mount daemon running\n"
+    else
+        printf "  ${DIM}–${NC}  Auto-mount daemon not installed\n"
+        printf "       Enable: ${BOLD}sudo ntfs daemon install${NC}\n"
+    fi
+
+    find_ntfs_volumes
+    printf "\n  NTFS volumes detected: %d\n" "${#NTFS_DISKS[@]}"
+    echo
+}
+
+# ── cmd: daemon ───────────────────────────────────────────────────────────────
+cmd_daemon() {
+    local subcmd="${1:-status}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        install)
+            [ "$(id -u)" -eq 0 ] || die "Run with sudo: sudo ntfs daemon install"
+            info "Installing auto-mount daemon..."
+
+            local self
+            self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+            if [ "$self" != /usr/local/bin/ntfs ]; then
+                cp "$self" /usr/local/bin/ntfs
+                chown root:wheel /usr/local/bin/ntfs
+                chmod 755 /usr/local/bin/ntfs
+                info "Copied ntfs to /usr/local/bin/ntfs"
+            fi
+
+            cat > "$DAEMON_PLIST" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ntfshandler.automount</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/ntfs</string>
+        <string>__daemon-run</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/var/log/ntfs-daemon.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/ntfs-daemon.log</string>
+</dict>
+</plist>
+PLIST
+
+            launchctl bootstrap system "$DAEMON_PLIST" 2>/dev/null \
+                || launchctl load "$DAEMON_PLIST" 2>/dev/null \
+                || warn "Could not start daemon now — it will start on next boot"
+            ok "Auto-mount daemon installed"
+            info "Logs: sudo tail -f $DAEMON_LOG"
+            ;;
+
+        uninstall)
+            [ "$(id -u)" -eq 0 ] || die "Run with sudo: sudo ntfs daemon uninstall"
+            launchctl unload "$DAEMON_PLIST" 2>/dev/null \
+                || launchctl bootout system "$DAEMON_PLIST" 2>/dev/null || true
+            rm -f "$DAEMON_PLIST"
+            ok "Auto-mount daemon removed"
+            ;;
+
+        status)
+            if sudo launchctl list 2>/dev/null | grep -q "ntfshandler"; then
+                ok "Auto-mount daemon is ${GREEN}running${NC}"
+                info "Logs: sudo tail -f $DAEMON_LOG"
+            else
+                warn "Auto-mount daemon is not running"
+                printf "  Enable: ${BOLD}sudo ntfs daemon install${NC}\n"
+            fi
+            ;;
+
+        logs)
+            sudo tail -f "$DAEMON_LOG"
+            ;;
+
+        *)
+            die "Unknown daemon subcommand: $subcmd  (use: install, uninstall, status, logs)"
+            ;;
+    esac
+}
+
+# ── Internal: daemon loop (called by LaunchDaemon as root) ───────────────────
+__daemon_run() {
+    local seen_file="/tmp/.ntfs-daemon-seen"
+    local pid_file="/var/run/ntfs-daemon.pid"
+
+    find_ntfs3g &>/dev/null || { echo "ntfs-3g not found, daemon exiting"; exit 1; }
+
+    echo $$ > "$pid_file"
+    trap 'rm -f "$pid_file"; exit 0' TERM INT
+
+    # Clear seen_file on every start so drives already plugged in get mounted.
+    # Without this, a daemon restart (not reboot) would silently skip existing drives.
+    : > "$seen_file"
+    printf '[%s] ntfs-daemon v%s started (PID %d)\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "$VERSION" "$$"
+
+    while true; do
+        local current_disks
+        current_disks=$(diskutil list 2>/dev/null \
+            | awk '/Microsoft Basic Data|Windows_NTFS/ {print $NF}' | sort || true)
+
+        local failed_disks=()
+
+        while IFS= read -r disk_id; do
+            [ -z "$disk_id" ] && continue
+            grep -qxF "$disk_id" "$seen_file" 2>/dev/null && continue
+
+            printf '[%s] New NTFS volume: %s\n' "$(date '+%H:%M:%S')" "$disk_id"
+
+            # Skip only if already mounted read-write (ntfs-3g or user manual mount).
+            # If macOS auto-mounted it read-only, fall through so do_mount can
+            # release it and remount read-write.
+            if mount 2>/dev/null | grep "/dev/$disk_id on" | grep -qv "read-only"; then
+                printf '[%s] %s already mounted rw, skipping\n' "$(date '+%H:%M:%S')" "$disk_id"
+                continue
+            fi
+
+            local fs_type vol_name
+            fs_type=$(diskutil_plist_key "$disk_id" FilesystemType)
+            [[ "$fs_type" == *ntfs* ]] || continue
+
+            vol_name=$(diskutil_plist_key "$disk_id" VolumeName)
+            if [ -z "$vol_name" ] || [ "$vol_name" = "Not applicable" ]; then
+                vol_name="NTFS_${disk_id}"
+            fi
+
+            # Kick macOS read-only auto-mount before mounting rw
+            diskutil unmount force "$disk_id" &>/dev/null || true
+
+            if do_mount "$disk_id" "$vol_name" "" "" "$DAEMON_MOUNT_RECORD"; then
+                chmod 644 "$DAEMON_MOUNT_RECORD" 2>/dev/null || true
+            else
+                failed_disks+=("$disk_id")
+            fi
+
+        done <<< "$current_disks"
+
+        # Write all currently-connected disks as seen, then remove failed mounts
+        # so the daemon retries them on the next poll instead of giving up.
+        printf '%s\n' "$current_disks" > "$seen_file"
+        local fd tmp_seen
+        for fd in "${failed_disks[@]}"; do
+            tmp_seen=$(mktemp)
+            grep -vxF "$fd" "$seen_file" > "$tmp_seen" 2>/dev/null || true
+            mv "$tmp_seen" "$seen_file"
+        done
+
+        sleep "${NTFS_DAEMON_POLL_INTERVAL:-10}"
+    done
+}
+
+# ── cmd: install ──────────────────────────────────────────────────────────────
+cmd_install() {
+    local self selfdir
+    self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+    selfdir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    info "Installing ntfs to /usr/local/bin/ntfs..."
+    sudo mkdir -p /usr/local/bin
+    sudo cp "$self" /usr/local/bin/ntfs
+    sudo chown root:wheel /usr/local/bin/ntfs
+    sudo chmod 755 /usr/local/bin/ntfs
+    ok "Installed!"
+
+    # zsh completion — /usr/local/share/zsh/site-functions is in zsh's default fpath
+    local comp_src="$selfdir/completions/_ntfs"
+    local comp_dst="/usr/local/share/zsh/site-functions/_ntfs"
+    if [ -f "$comp_src" ]; then
+        sudo mkdir -p /usr/local/share/zsh/site-functions
+        sudo cp "$comp_src" "$comp_dst"
+        ok "zsh completion installed"
+        info "Reload your shell or run: autoload -U compinit && compinit"
+    fi
+
+    echo
+    printf "  ${BOLD}Quick start:${NC}\n"
+    printf "  ntfs list                    # see connected NTFS drives\n"
+    printf "  ntfs mount                   # interactive mount\n"
+    printf "  ntfs mount --all --visible   # mount everything, show in Finder\n"
+    printf "  sudo ntfs daemon install     # auto-mount on plug-in\n"
+    echo
+}
+
+# ── cmd: help ─────────────────────────────────────────────────────────────────
+cmd_help() {
+    printf "${BOLD}ntfs %s${NC} — Free NTFS read/write for macOS\n" "$VERSION"
+    printf "https://github.com/WildBenji/ntfs-handler\n\n"
+    printf "Usage: ${BOLD}ntfs${NC} <command> [options]\n\n"
+    printf "${BOLD}Commands:${NC}\n"
+    printf "  list                         List all NTFS volumes\n"
+    printf "  mount   [options] [disk...]  Mount interactively or by disk ID\n"
+    printf "  unmount [options] [disk...]  Unmount\n"
+    printf "  eject   [options] [disk...]  Unmount and eject physical disk\n"
+    printf "  status                       Show mounted volumes (cleans stale records)\n"
+    printf "  daemon  <subcommand>         Manage auto-mount daemon\n"
+    printf "  doctor                       Check system health and dependencies\n"
+    printf "  install                      Copy ntfs to /usr/local/bin\n\n"
+    printf "${BOLD}Mount options:${NC}\n"
+    printf "  --visible, -v    Show in Finder (default: hidden)\n"
+    printf "  --readonly, -r   Mount read-only\n"
+    printf "  --all, -a        Mount all detected volumes\n\n"
+    printf "${BOLD}Daemon subcommands:${NC}\n"
+    printf "  sudo ntfs daemon install     Enable auto-mount on plug-in\n"
+    printf "  sudo ntfs daemon uninstall   Remove daemon\n"
+    printf "       ntfs daemon status      Check if running\n"
+    printf "  sudo ntfs daemon logs        Follow logs\n\n"
+    printf "${BOLD}Examples:${NC}\n"
+    printf "  ntfs list\n"
+    printf "  ntfs mount\n"
+    printf "  ntfs mount --all --visible\n"
+    printf "  ntfs mount disk2s1\n"
+    printf "  ntfs eject disk2s1\n"
+    printf "  sudo ntfs daemon install\n\n"
+}
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+    list|ls)            cmd_list    "$@" ;;
+    mount|m)            cmd_mount   "$@" ;;
+    unmount|umount|u)   cmd_unmount "$@" ;;
+    eject|e)            cmd_eject   "$@" ;;
+    status|st)          cmd_status  "$@" ;;
+    daemon)             cmd_daemon  "$@" ;;
+    doctor|check)       cmd_doctor  "$@" ;;
+    install)            cmd_install "$@" ;;
+    __daemon-run)       __daemon_run ;;
+    version|-V|--version) printf "ntfs %s\n" "$VERSION" ;;
+    help|-h|--help)     cmd_help ;;
+    *)                  err "Unknown command: $cmd"; cmd_help; exit 1 ;;
+esac

@@ -1,165 +1,159 @@
 # ntfs-handler — Free NTFS for macOS
 
-NTFS drives. On your Mac. Read and write. **Free.**
+Plug in a Windows drive. Read and write files. For free.
 
-> Tired of paying $20–$50 for Paragon NTFS or Tuxera? This does the same thing. No license, no account, no catch.
+macOS can read NTFS drives but refuses to write to them out of the box. This fixes that.
+
+---
+
+## What you need before starting
+
+- A Mac running macOS Monterey (12) or later
+- An internet connection
+- About 5 minutes
+
+That's it. No account, no license, no payment.
 
 ---
 
 ## Install
 
+Open **Terminal** (press `⌘ Space`, type "Terminal", press Enter) and paste this:
+
 ```sh
 bash <(curl -fsSL https://raw.githubusercontent.com/WildBenji/ntfs-handler/main/install.sh)
 ```
 
-The installer sets up Homebrew, ntfs-3g, and the `ntfs` command in one shot. macFUSE requires a manual approval step (it's a kernel extension — macOS requires user consent).
+The installer will walk you through everything. The only part that requires a manual step is **macFUSE** — macOS requires you to approve it in Security settings because it's a low-level system component. The installer tells you exactly what to do.
 
-**Manual install:**
+**After macFUSE is approved you must restart your Mac** before it works.
+
+---
+
+## Using it
+
+Once installed, you use the `ntfs` command in Terminal.
+
+### See your connected NTFS drives
 
 ```sh
-brew install ntfs-3g
-# Install macFUSE from https://osxfuse.github.io/
-# Then: System Settings → Privacy & Security → Allow → Reboot
+ntfs list
+```
 
-git clone https://github.com/WildBenji/ntfs-handler.git
-cd ntfs-handler && ./ntfs install
+This shows all the NTFS drives plugged in and whether they're writable.
+
+### Mount a drive (make it writable)
+
+```sh
+ntfs mount
+```
+
+Pick a drive from the menu. That's it — you can now read and write files on it.
+
+The drive won't show up in the Finder sidebar by default (this avoids a macOS quirk). To open it, press **⌘⇧G** in Finder and type `/Volumes/YourDriveName`.
+
+If you want it in the Finder sidebar:
+
+```sh
+ntfs mount --visible
+```
+
+### Safely unplug a drive
+
+Always do this before pulling the cable:
+
+```sh
+ntfs eject
+```
+
+Pick the drive. Wait for the "safe to unplug" message. Then unplug.
+
+> Pulling the cable without ejecting can corrupt the drive, just like on Windows.
+
+### Check what's currently mounted
+
+```sh
+ntfs status
 ```
 
 ---
 
-## Quick Start
+## Auto-mount (plug in and it just works)
+
+If you want drives to mount automatically every time you plug one in, run this once:
 
 ```sh
-ntfs list                     # see connected NTFS drives
-ntfs mount                    # pick a drive to mount (interactive)
-ntfs mount --all --visible    # mount everything, show in Finder
-ntfs eject                    # safely unmount + spin down
-sudo ntfs daemon install      # auto-mount every time you plug in a drive
+sudo ntfs daemon install
+```
+
+After that, plugging in an NTFS drive will mount it automatically within about 10 seconds. No commands needed.
+
+To turn it off:
+
+```sh
+sudo ntfs daemon uninstall
 ```
 
 ---
 
-## All Commands
+## All commands
 
-### `ntfs list`
-Shows all connected NTFS drives and their status.
-
-```
-  DISK           VOLUME                       SIZE       STATUS
-  ────────────── ──────────────────────────── ────────── ──────────────
-  disk2s1        MyExternalHDD                931.5 GB   read-write
-  disk3s1        BackupDrive                  1.8 TB     macOS read-only
-```
-
-### `ntfs mount`
-
-```sh
-ntfs mount                    # interactive menu
-ntfs mount --all              # mount all at once
-ntfs mount --all --visible    # mount all, show in Finder sidebar
-ntfs mount disk2s1            # skip the menu, mount directly
-ntfs mount --readonly disk2s1 # read-only access
-```
-
-Drives mount at `/Volumes/<DriveName>`. Without `--visible` they're hidden from Finder — open them with **Go → Go to Folder** (`⌘⇧G`).
-
-If the drive was grabbed by macOS as read-only when you plugged it in, `ntfs mount` releases it automatically.
-
-### `ntfs unmount` / `ntfs eject`
-
-```sh
-ntfs unmount          # interactive
-ntfs unmount disk2s1  # specific drive
-ntfs eject            # unmount + spin down the physical disk (use this before unplugging)
-ntfs eject disk2s1
-```
-
-### `ntfs status`
-Shows what's currently mounted via ntfs-handler. Automatically cleans up stale records if a drive was unplugged without ejecting.
-
-### `ntfs daemon`
-
-Plug in a drive, it mounts itself. No commands needed.
-
-```sh
-sudo ntfs daemon install      # enable (survives reboots)
-sudo ntfs daemon uninstall    # disable
-ntfs daemon status            # check if running
-sudo ntfs daemon logs         # live log stream
-```
-
-### `ntfs doctor`
-Diagnoses your setup — checks ntfs-3g, macFUSE, SIP, the daemon, and connected volumes.
-
-```sh
-ntfs doctor
-```
-
----
-
-## Comparison
-
-| | ntfs-handler | Paragon NTFS | Tuxera NTFS |
-|---|:---:|:---:|:---:|
-| Price | **Free** | ~$20 | ~$31 |
-| Read/write | ✓ | ✓ | ✓ |
-| Auto-mount on plug-in | ✓ | ✓ | ✓ |
-| Finder integration | Optional | ✓ | ✓ |
-| BitLocker | ✗ | ✓ | ✓ |
-| Native kernel driver | ✗ | ✓ | ✓ |
-| Open source | ✓ | ✗ | ✗ |
-| Telemetry | None | Unknown | Unknown |
+| Command | What it does |
+|---|---|
+| `ntfs list` | Show connected NTFS drives |
+| `ntfs mount` | Mount a drive (interactive menu) |
+| `ntfs mount --all` | Mount all connected NTFS drives |
+| `ntfs mount --visible` | Mount and show in Finder sidebar |
+| `ntfs unmount` | Unmount a drive |
+| `ntfs eject` | Unmount and safely spin down the disk |
+| `ntfs status` | Show what's currently mounted |
+| `ntfs daemon install` | Enable auto-mount on plug-in |
+| `ntfs daemon status` | Check if auto-mount is running |
+| `ntfs doctor` | Check your setup for problems |
 
 ---
 
 ## Troubleshooting
 
-**Drive not showing up**
-Run `ntfs doctor`. Most likely macFUSE isn't approved yet — go to System Settings → Privacy & Security → Allow (next to macFUSE), then reboot.
+**Drive not showing up in `ntfs list`**
+Run `ntfs doctor`. The most likely cause is macFUSE hasn't been approved yet — go to System Settings → Privacy & Security, find the macFUSE entry, click Allow, then restart.
 
-**Mount fails**
-ntfs-3g will automatically try to recover if the drive wasn't safely ejected from Windows. If it still fails, run `ntfs doctor` to check your setup.
+**Mount fails or says "dirty volume"**
+The drive probably wasn't safely ejected from Windows last time. ntfs-handler will try to recover it automatically. If it keeps failing, run `ntfs doctor`.
 
-**Drive still spinning after unmount**
-Use `ntfs eject` — it sends the spin-down command to the disk. `ntfs unmount` only unmounts the filesystem.
+**Drive still spinning after unplug**
+Use `ntfs eject` next time instead of `ntfs unmount`. Eject sends the proper spin-down signal to the disk.
 
-**Stale records / drive shows as mounted but isn't**
-Run `ntfs status` — it cleans these up automatically.
+**Shows as mounted but I can't see it**
+Open Finder, press **⌘⇧G**, and type `/Volumes/` — your drive should be listed there. Or run `ntfs mount --visible` to remount it with Finder sidebar visibility.
 
-**Daemon not mounting drives**
-Check `ntfs daemon status` and `sudo ntfs daemon logs`. macFUSE must be approved before the daemon can mount anything.
+**Stale "mounted" entry for a drive I already unplugged**
+Run `ntfs status` — it cleans those up automatically.
 
 ---
 
 ## Uninstall
 
 ```sh
-sudo ntfs daemon uninstall           # remove auto-mount daemon (if installed)
-sudo rm /usr/local/bin/ntfs          # remove the command
-sudo rm /usr/local/share/zsh/site-functions/_ntfs  # remove zsh completion
-rm -f ~/.ntfs-mounts                 # remove mount record
+sudo ntfs daemon uninstall        # remove auto-mount (if you set it up)
+sudo rm /usr/local/bin/ntfs       # remove the command
+sudo rm /usr/local/share/zsh/site-functions/_ntfs  # remove tab completion
+rm -f ~/.ntfs-mounts              # remove mount records
 ```
 
 ---
 
-## What it doesn't do
+## Limitations
 
-- **No BitLocker** — ntfs-3g doesn't support encrypted NTFS volumes
-- **No GUI** — command-line only
-- **Not a kernel driver** — uses macFUSE (user-space). Works great for everyday use; throughput is lower than Paragon/Tuxera on large copies
-- **No Finder eject button** for hidden mounts — use `ntfs eject`
+**One-time macFUSE approval required.** macOS treats it as a third-party system extension and requires manual approval followed by a reboot. You only do this once.
 
----
+**BitLocker-encrypted drives are not supported.** If your drive is encrypted with BitLocker (a Windows feature), this tool can't access it.
 
-## Known Limitations
+**No graphical interface.** Everything is done in Terminal.
 
-**macFUSE requires a one-time manual approval.** macOS treats it as a third-party kernel extension and requires you to allow it in Security settings, followed by a reboot.
+**Performance.** This uses a user-space driver, not a kernel driver. It works great for everyday use — documents, photos, music, videos. On very large file transfers (100 GB+) it will be slower than a native driver would be.
 
-**Performance is lower than commercial tools.** FUSE adds user-space overhead. Fine for documents, photos, media. Noticeable on sustained large file transfers.
-
-**The daemon polls every 10 seconds** (configurable via `NTFS_DAEMON_POLL_INTERVAL`). Detection isn't instant but is fast enough for real use.
-
-**SIP does not need to be disabled.** macFUSE works with SIP enabled on Monterey and later.
+**Auto-mount checks every 10 seconds.** When you plug in a drive, it may take up to 10 seconds to mount automatically.
 
 ---
 
@@ -169,11 +163,11 @@ Public domain. No copyright claimed. Use, copy, modify, sell — no restrictions
 
 ---
 
-## Technical
+## Technical details
 
-- **Disk info:** `diskutil info -plist` + `plutil` — structured plist parsing, not fragile text scraping
+- **Disk info:** `diskutil info -plist` + `plutil` — structured plist parsing
 - **Mount options:** `local,allow_other,auto_xattr,windows_names,volname=<name>` (+ `nobrowse` unless `--visible`, + `ro` if `--readonly`, + `recover` on retry)
-- **Eject:** `umount` blocks until ntfs-3g exits and releases the device fd; then `diskutil unmountDisk force` clears any Disk Arbitration auto-remounts; then `diskutil eject` sends SCSI STOP UNIT
+- **Eject sequence:** `umount` (waits for FUSE teardown) → `diskutil unmountDisk force` (clears Disk Arbitration auto-remount) → `diskutil eject` (SCSI STOP UNIT)
 - **Daemon:** LaunchDaemon at `/Library/LaunchDaemons/com.ntfshandler.automount.plist`, runs as root, polls every `$NTFS_DAEMON_POLL_INTERVAL` seconds (default: 10); retries failed mounts; clears seen-list on start
 - **Mount records:** `~/.ntfs-mounts` (user), `/var/run/ntfs-daemon-mounts` (daemon) — tab-separated, atomic `mktemp` + `mv`
 - **Shell:** bash 3.2+; ShellCheck clean

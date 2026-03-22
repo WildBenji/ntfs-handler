@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.4"
 MOUNT_RECORD="$HOME/.ntfs-mounts"
 DAEMON_MOUNT_RECORD="/var/run/ntfs-daemon-mounts"
 DAEMON_PLIST="/Library/LaunchDaemons/com.ntfshandler.automount.plist"

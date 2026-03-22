@@ -749,6 +749,57 @@ __daemon_run() {
 }
 
 # ── cmd: install ──────────────────────────────────────────────────────────────
+install_sudoers() {
+    local sudoers_file="/etc/sudoers.d/ntfs-handler"
+
+    echo
+    printf "  ${BOLD}Password-free mounting (optional)${NC}\n"
+    echo
+    printf "  Right now, every time you mount or eject a drive, macOS asks for your\n"
+    printf "  password. This is because mounting requires root access.\n"
+    echo
+    printf "  Saying ${BOLD}yes${NC} adds a rule to /etc/sudoers.d/ntfs-handler that lets your\n"
+    printf "  account run the specific commands ntfs uses (ntfs-3g, diskutil, umount)\n"
+    printf "  without typing a password. Only those exact programs are affected —\n"
+    printf "  everything else still requires your password as usual.\n"
+    echo
+    printf "  ${YELLOW}▲${NC}  ${BOLD}Security note:${NC} any admin user on this Mac will be able to mount and\n"
+    printf "  eject drives without a password. If you are the only user, or you trust\n"
+    printf "  everyone with an admin account on this machine, this is fine. If you share\n"
+    printf "  your Mac with other people who have admin accounts, say no.\n"
+    echo
+    printf "  Saying ${BOLD}no${NC} changes nothing — you will keep being asked for your password\n"
+    printf "  when mounting or ejecting, which is the default macOS behavior.\n"
+    echo
+    read -rp "  Skip password prompts for ntfs? [y/N] " yn
+    if [[ ! "${yn:-}" =~ ^[Yy]$ ]]; then
+        info "Skipped — you will be prompted for your password when mounting/ejecting"
+        return 0
+    fi
+
+    local tmp
+    tmp=$(mktemp)
+    cat > "$tmp" <<'EOF'
+# ntfs-handler — allow staff group to run mount/eject commands without a password.
+# Installed by: ntfs install
+# Remove with:  sudo rm /etc/sudoers.d/ntfs-handler
+%staff ALL=(root) NOPASSWD: /usr/local/bin/ntfs-3g, /opt/homebrew/bin/ntfs-3g, /usr/sbin/diskutil, /sbin/umount, /bin/rmdir
+EOF
+
+    if ! visudo -c -f "$tmp" &>/dev/null; then
+        rm -f "$tmp"
+        err "sudoers syntax check failed — skipping"
+        return 1
+    fi
+
+    sudo cp "$tmp" "$sudoers_file"
+    sudo chown root:wheel "$sudoers_file"
+    sudo chmod 440 "$sudoers_file"
+    rm -f "$tmp"
+    ok "Passwordless mounting enabled (rule saved to $sudoers_file)"
+    info "To remove it later: sudo rm $sudoers_file"
+}
+
 cmd_install() {
     local self selfdir
     self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
@@ -772,6 +823,8 @@ cmd_install() {
     else
         info "zsh completion not found — run the curl installer or clone the full repo to get it"
     fi
+
+    install_sudoers
 
     echo
     printf "  ${BOLD}Quick start:${NC}\n"

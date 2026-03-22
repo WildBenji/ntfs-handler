@@ -138,6 +138,7 @@ Run `ntfs status` — it cleans those up automatically.
 sudo ntfs daemon uninstall        # remove auto-mount (if you set it up)
 sudo rm /usr/local/bin/ntfs       # remove the command
 sudo rm /usr/local/share/zsh/site-functions/_ntfs  # remove tab completion
+sudo rm -f /etc/sudoers.d/ntfs-handler  # remove passwordless rule (if installed)
 rm -f ~/.ntfs-mounts              # remove mount records
 ```
 

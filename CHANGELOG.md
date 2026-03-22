@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.4] - 2026-03-22
+
+### Added
+- **Password-free mounting (optional)** — `ntfs install` and `install.sh` now offer to write `/etc/sudoers.d/ntfs-handler`, granting the `staff` group NOPASSWD access to exactly the binaries ntfs uses (`ntfs-3g`, `diskutil`, `umount`, `rmdir`). The prompt explains what it does, what it doesn't affect, and the security trade-off before asking. Easily removed with `sudo rm /etc/sudoers.d/ntfs-handler`.
+
+---
+
 ## [0.3.3] - 2026-03-22
 
 ### Fixed

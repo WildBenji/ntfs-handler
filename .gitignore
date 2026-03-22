@@ -1,0 +1,5 @@
+# Local dev tools
+.shellcheckrc
+
+# Claude Code project files
+.claude/

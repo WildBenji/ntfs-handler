@@ -144,7 +144,11 @@ record_unmount() {
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 safe_name() {
-    printf '%s' "$1" | tr -cd '[:alnum:] ._-' | tr ' ' '_' \
+    # Strip only / and : (the chars that break mount paths) plus control chars.
+    # Leave Unicode intact so international drive names stay human-readable.
+    printf '%s' "$1" \
+        | sed 's|[/:]||g; s/[[:cntrl:]]//g' \
+        | tr ' ' '_' \
         | sed 's/^[._-]*//; s/[._-]*$//'
 }
 
@@ -365,10 +369,10 @@ cmd_mount() {
 
     # Mount all
     if [ -n "$all_flag" ]; then
-        local mounted=0 failed=0 i
+        local mounted=0 failed=0 skipped=0 i
         for i in "${!NTFS_DISKS[@]}"; do
             if [ "$(mount_status "${NTFS_DISKS[$i]}")" = "rw" ]; then
-                warn "${NTFS_VOLNAMES[$i]} is already mounted read-write — skipping"
+                skipped=$((skipped+1))
                 continue
             fi
             do_mount "${NTFS_DISKS[$i]}" "${NTFS_VOLNAMES[$i]}" "$visible" "$readonly" \
@@ -376,6 +380,7 @@ cmd_mount() {
         done
         echo
         [ $mounted -gt 0 ] && ok "$mounted volume(s) mounted"
+        [ $skipped -gt 0 ] && info "$skipped already mounted read-write — nothing to do"
         [ $failed  -gt 0 ] && warn "$failed volume(s) failed"
         return 0
     fi
@@ -638,7 +643,7 @@ PLIST
 
 # ── Internal: daemon loop (called by LaunchDaemon as root) ───────────────────
 __daemon_run() {
-    local seen_file="/tmp/.ntfs-daemon-seen"
+    local seen_file="/var/run/ntfs-daemon-seen"
     local pid_file="/var/run/ntfs-daemon.pid"
 
     find_ntfs3g &>/dev/null || { echo "ntfs-3g not found, daemon exiting"; exit 1; }
@@ -728,6 +733,8 @@ cmd_install() {
         sudo cp "$comp_src" "$comp_dst"
         ok "zsh completion installed"
         info "Reload your shell or run: autoload -U compinit && compinit"
+    else
+        info "zsh completion not found — run the curl installer or clone the full repo to get it"
     fi
 
     echo

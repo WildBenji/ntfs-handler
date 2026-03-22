@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.1] - 2026-03-22
+
+### Changed
+- **International drive names preserved** — `safe_name()` now only strips `/`, `:`, and control characters; Unicode is left intact so drives named "磁盘", "Мой Диск", etc. mount at a recognisable path instead of falling back to the disk ID
+- **Daemon `seen_file` moved to `/var/run`** — consistent with other daemon state files; `/tmp` was correct but `/var/run` is the proper location for root-owned runtime state
+- **`ntfs mount --all` shows skip count** — when all volumes are already mounted read-write, prints "N already mounted read-write — nothing to do" instead of silent exit
+- **`ntfs install` informs when zsh completions are missing** — prints a hint to use the curl installer or clone the full repo instead of silently skipping
+
+---
+
 ## [0.3.0] - 2026-03-22
 
 ### Added

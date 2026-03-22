@@ -129,6 +129,8 @@ echo
 printf "  Saying no changes nothing — you will keep being asked for your password\n"
 printf "  when mounting or ejecting, which is the default macOS behavior.\n"
 echo
+printf "  ${DIM}This is completely reversible: sudo rm /etc/sudoers.d/ntfs-handler${NC}\n"
+echo
 read -rp "  Skip password prompts for ntfs? [y/N] " yn
 if [[ "${yn:-}" =~ ^[Yy]$ ]]; then
     sudoers_file="/etc/sudoers.d/ntfs-handler"

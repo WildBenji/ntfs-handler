@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.2] - 2026-03-22
+
+### Fixed
+- **`safe_name` consecutive underscores** — "My / Data : Volume" now produces `My_Data_Volume` instead of `My___Data___Volume`; consecutive underscores are collapsed
+- **Ghost mount point directories** — `get_mount_point` now skips any existing directory (mounted or not), preventing ntfs-3g from failing on a non-empty leftover directory from a previous crashed mount
+
+---
+
 ## [0.3.1] - 2026-03-22
 
 ### Changed

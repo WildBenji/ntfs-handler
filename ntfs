@@ -147,9 +147,7 @@ safe_name() {
     # Strip only / and : (the chars that break mount paths) plus control chars.
     # Leave Unicode intact so international drive names stay human-readable.
     printf '%s' "$1" \
-        | sed 's|[/:]||g; s/[[:cntrl:]]//g' \
-        | tr ' ' '_' \
-        | sed 's/^[._-]*//; s/[._-]*$//'
+        | sed 's|[/:]||g; s/[[:cntrl:]]//g; s/ /_/g; s/__*/_/g; s/^_//; s/_$//'
 }
 
 get_mount_point() {
@@ -158,7 +156,9 @@ get_mount_point() {
     safe=$(safe_name "$vol_name")
     base="/Volumes/${safe:-$disk_id}"
     local mp="$base" i=2
-    while [ -d "$mp" ] && mount 2>/dev/null | grep -qF " on $mp "; do
+    # Skip any existing directory (mounted or ghost with leftover files);
+    # ntfs-3g refuses to mount on a non-empty directory.
+    while [ -d "$mp" ]; do
         mp="${base}_${i}"; i=$((i+1))
     done
     echo "$mp"

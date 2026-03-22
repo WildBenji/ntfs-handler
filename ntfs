@@ -444,11 +444,6 @@ cmd_unmount() {
 
     load_mount_record
 
-    if [ ${#REC_DISKS[@]} -eq 0 ]; then
-        warn "No mounted NTFS volumes tracked. Nothing to unmount."
-        return 0
-    fi
-
     # Remove stale records before showing the menu
     local i stale=()
     for i in "${!REC_DISKS[@]}"; do
@@ -460,6 +455,47 @@ cmd_unmount() {
     fi
 
     if [ ${#REC_DISKS[@]} -eq 0 ]; then
+        if [ -n "$eject" ]; then
+            # Nothing tracked — but the disk may be spinning with a macOS read-only
+            # mount or no mount at all. Offer to eject detected NTFS disks directly.
+            find_ntfs_volumes
+            if [ ${#NTFS_DISKS[@]} -eq 0 ]; then
+                warn "No NTFS volumes detected. Nothing to eject."
+                return 0
+            fi
+            printf "\n  ${BOLD}NTFS Drives${NC}\n\n"
+            for i in "${!NTFS_DISKS[@]}"; do
+                printf "  ${CYAN}%d)${NC}  %-30s ${DIM}%s  %s${NC}\n" \
+                    $((i+1)) "${NTFS_VOLNAMES[$i]}" "${NTFS_DISKS[$i]}" "${NTFS_SIZES[$i]}"
+            done
+            echo
+            printf "  Select drive to eject (or 'a' for all): "
+            local input choices=()
+            read -r input
+            if [ "$input" = "a" ] || [ "$input" = "all" ]; then
+                for i in "${!NTFS_DISKS[@]}"; do choices+=($((i+1))); done
+            else
+                read -r -a choices <<< "$input"
+            fi
+            local choice idx parent
+            for choice in "${choices[@]}"; do
+                if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#NTFS_DISKS[@]}" ]; then
+                    err "Invalid selection: $choice"; continue
+                fi
+                idx=$((choice-1))
+                parent=$(echo "${NTFS_DISKS[$idx]}" | sed 's/s[0-9]*$//; s/p[0-9]*$//')
+                printf "${BLUE}=>${NC}  Ejecting ${BOLD}%s${NC}...\n" "${NTFS_VOLNAMES[$idx]}"
+                sudo diskutil unmountDisk force "$parent" &>/dev/null || true
+                if sudo diskutil eject "$parent" &>/dev/null; then
+                    ok "Ejected ${BOLD}${NTFS_VOLNAMES[$idx]}${NC} — safe to unplug"
+                elif ! diskutil info "$parent" &>/dev/null; then
+                    ok "Ejected ${BOLD}${NTFS_VOLNAMES[$idx]}${NC} — safe to unplug"
+                else
+                    warn "Could not eject ${NTFS_VOLNAMES[$idx]} — unplug manually when the activity light stops"
+                fi
+            done
+            return 0
+        fi
         warn "No mounted NTFS volumes tracked. Nothing to unmount."
         return 0
     fi

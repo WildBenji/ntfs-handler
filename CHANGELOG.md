@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.3] - 2026-03-22
+
+### Fixed
+- **`ntfs eject` on untracked spinning disk** — when no ntfs-handler mounts are recorded (drive is spinning but was never mounted by us, or was grabbed read-only by macOS), `ntfs eject` now detects all connected NTFS volumes and offers a menu to eject them directly via `diskutil unmountDisk force` + `diskutil eject`
+
+---
+
 ## [0.3.2] - 2026-03-22
 
 ### Fixed

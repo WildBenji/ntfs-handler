@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1] - 2026-03-26
+
+### Fixed
+- **Daemon restarting every 10 seconds** — `diskutil activity` requires a Core Foundation run loop that doesn't exist in a LaunchDaemon process; it exited immediately causing launchd to restart the whole daemon. Reverted to polling, which works correctly in the LaunchDaemon environment
+- **Finder hangs on file delete** — added `noappledouble` mount option to prevent macFUSE from creating `._` AppleDouble files; Finder was blocking indefinitely trying to write extended attributes during move-to-trash
+
+---
+
 ## [0.4.0] - 2026-03-26
 
 ### Changed

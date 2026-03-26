@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-VERSION="0.4.0"
+VERSION="0.4.1"
 MOUNT_RECORD="${HOME:-/var/root}/.ntfs-mounts"
 DAEMON_MOUNT_RECORD="/var/run/ntfs-daemon-mounts"
 DAEMON_PLIST="/Library/LaunchDaemons/com.ntfshandler.automount.plist"
@@ -209,7 +209,7 @@ do_mount() {
 
     # volname sets what Finder displays; strip commas (option delimiter) from the name
     local volname_opt="${vol_name//,/}"
-    local opts="local,allow_other,auto_xattr,windows_names,volname=${volname_opt}"
+    local opts="local,allow_other,auto_xattr,noappledouble,windows_names,volname=${volname_opt}"
     [ -n "$readonly" ] && opts="${opts},ro"
     [ -z "$visible" ]  && opts="${opts},nobrowse"
 
@@ -714,8 +714,9 @@ _daemon_try_mount() {
     if do_mount "$disk_id" "$vol_name" "1" "" "$DAEMON_MOUNT_RECORD"; then
         chmod 644 "$DAEMON_MOUNT_RECORD" 2>/dev/null || true
         printf '%s\n' "$disk_id" >> "$seen_file"
+        return 0
     fi
-    # On failure: do not add to seen_file — next disk event will retry
+    return 1  # caller tracks failure for retry on next poll
 }
 
 # ── Internal: daemon loop (called by LaunchDaemon as root) ───────────────────
@@ -739,35 +740,48 @@ __daemon_run() {
         _daemon_try_mount "$disk_id" "$seen_file"
     done < <(diskutil list 2>/dev/null | awk '/Microsoft Basic Data|Windows_NTFS/ {print $NF}')
 
-    # Event-driven: react to Disk Arbitration events instead of polling.
-    # Only runs disk operations when the kernel signals a change — never touches
-    # the disk subsystem during sleep/wake, which prevented kernel panics with polling.
+    # Poll for new NTFS volumes. On each iteration:
+    # - check which disks are currently connected
+    # - attempt to mount any that are new (not in seen_file)
+    # - mark all connected disks as seen; remove failed ones so they retry next poll
+    # - remove disks that disappeared from seen_file so they re-mount if reconnected
     while true; do
-        while IFS= read -r event; do
-            # Rotate log at 10 MB
-            if [ -f "$DAEMON_LOG" ] && [ "$(stat -f%z "$DAEMON_LOG" 2>/dev/null || echo 0)" -gt 10485760 ]; then
-                mv "$DAEMON_LOG" "${DAEMON_LOG}.$(date +%Y%m%d%H%M%S)"
-                printf '[%s] Log rotated\n' "$(date '+%Y-%m-%d %H:%M:%S')"
-            fi
+        # Rotate log at 10 MB
+        if [ -f "$DAEMON_LOG" ] && [ "$(stat -f%z "$DAEMON_LOG" 2>/dev/null || echo 0)" -gt 10485760 ]; then
+            mv "$DAEMON_LOG" "${DAEMON_LOG}.$(date +%Y%m%d%H%M%S)"
+            printf '[%s] Log rotated\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+        fi
 
-            # Extract partition identifier from event line (matches disk4s1, not disk4)
-            disk_id=$(printf '%s' "$event" | grep -oE "'disk[0-9]+s[0-9]+'" | head -1 | tr -d "'")
-            [ -n "$disk_id" ] || continue
+        local current_disks failed_disks
+        current_disks=$(diskutil list 2>/dev/null \
+            | awk '/Microsoft Basic Data|Windows_NTFS/ {print $NF}' | sort || true)
+        failed_disks=()
 
-            if [[ "$event" == *"DiskAppeared"* ]] || [[ "$event" == *"DiskMounted"* ]]; then
-                _daemon_try_mount "$disk_id" "$seen_file"
-            elif [[ "$event" == *"DiskDisappeared"* ]]; then
-                # Remove from seen_file so it gets re-mounted if reconnected
-                local tmp_seen; tmp_seen=$(mktemp)
-                grep -vxF "$disk_id" "$seen_file" > "$tmp_seen" 2>/dev/null || true
-                mv "$tmp_seen" "$seen_file" || { rm -f "$tmp_seen"; true; }
-            fi
+        while IFS= read -r disk_id; do
+            [ -z "$disk_id" ] && continue
+            _daemon_try_mount "$disk_id" "$seen_file" || failed_disks+=("$disk_id")
+        done <<< "$current_disks"
 
-        done < <(diskutil activity 2>/dev/null)
+        # Mark all connected disks as seen; remove failed ones so next poll retries them
+        printf '%s\n' "$current_disks" > "$seen_file"
+        local fd tmp_seen
+        for fd in ${failed_disks[@]+"${failed_disks[@]}"}; do
+            tmp_seen=$(mktemp)
+            grep -vxF "$fd" "$seen_file" > "$tmp_seen" 2>/dev/null || true
+            mv "$tmp_seen" "$seen_file" || { rm -f "$tmp_seen"; true; }
+        done
 
-        # diskutil activity exited unexpectedly — restart it after a short pause
-        printf '[%s] diskutil activity exited, restarting in 5s\n' "$(date '+%Y-%m-%d %H:%M:%S')"
-        sleep 5
+        # Remove disks from seen_file that are no longer connected,
+        # so they get re-mounted if plugged in again later
+        if [ -s "$seen_file" ] && [ -n "$current_disks" ]; then
+            tmp_seen=$(mktemp)
+            grep -Fxf <(printf '%s\n' "$current_disks") "$seen_file" > "$tmp_seen" 2>/dev/null || true
+            mv "$tmp_seen" "$seen_file" || { rm -f "$tmp_seen"; true; }
+        elif [ -z "$current_disks" ]; then
+            : > "$seen_file"
+        fi
+
+        sleep "${NTFS_DAEMON_POLL_INTERVAL:-10}"
     done
 }
 

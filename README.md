@@ -174,7 +174,7 @@ rm -f ~/.ntfs-mounts              # remove mount records
 
 **Performance.** This uses a user-space driver, not a kernel driver. It works great for everyday use — documents, photos, music, videos. On very large file transfers (100 GB+) it will be slower than a native driver would be.
 
-**Auto-mount latency.** The daemon reacts to disk events as they happen, so drives typically mount within a few seconds of being plugged in.
+**Auto-mount checks every 10 seconds.** When you plug in a drive, it may take up to 10 seconds to mount automatically.
 
 ---
 
@@ -187,9 +187,9 @@ Free and open source, forever. Use it, copy it, modify it, share it — but don'
 ## Technical details
 
 - **Disk info:** `diskutil info -plist` + `plutil` — structured plist parsing
-- **Mount options:** `local,allow_other,auto_xattr,windows_names,volname=<name>` (+ `nobrowse` unless `--visible`, + `ro` if `--readonly`, + `recover` on retry)
+- **Mount options:** `local,allow_other,auto_xattr,noappledouble,windows_names,volname=<name>` (+ `nobrowse` unless `--visible`, + `ro` if `--readonly`, + `recover` on retry)
 - **Eject sequence:** `umount` (waits for FUSE teardown) → `diskutil unmountDisk force` (clears Disk Arbitration auto-remount) → `diskutil eject` (SCSI STOP UNIT)
-- **Daemon:** LaunchDaemon at `/Library/LaunchDaemons/com.ntfshandler.automount.plist`, runs as root, event-driven via `diskutil activity` (no polling); initial scan on start; retries failed mounts on next disk event; clears seen-list on start
+- **Daemon:** LaunchDaemon at `/Library/LaunchDaemons/com.ntfshandler.automount.plist`, runs as root, polls every `$NTFS_DAEMON_POLL_INTERVAL` seconds (default: 10); retries failed mounts; clears seen-list on start
 - **Mount records:** `~/.ntfs-mounts` (user), `/var/run/ntfs-daemon-mounts` (daemon) — tab-separated, atomic `mktemp` + `mv`
 - **Shell:** bash 3.2+; ShellCheck clean
 - **Tested:** macOS Ventura 13, Sonoma 14 — Intel and Apple Silicon

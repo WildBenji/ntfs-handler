@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-VERSION="0.4.1"
+VERSION="0.4.2"
 MOUNT_RECORD="${HOME:-/var/root}/.ntfs-mounts"
 DAEMON_MOUNT_RECORD="/var/run/ntfs-daemon-mounts"
 DAEMON_PLIST="/Library/LaunchDaemons/com.ntfshandler.automount.plist"
@@ -209,7 +209,7 @@ do_mount() {
 
     # volname sets what Finder displays; strip commas (option delimiter) from the name
     local volname_opt="${vol_name//,/}"
-    local opts="local,allow_other,auto_xattr,noappledouble,windows_names,volname=${volname_opt}"
+    local opts="allow_other,auto_xattr,noappledouble,windows_names,volname=${volname_opt}"
     [ -n "$readonly" ] && opts="${opts},ro"
     [ -z "$visible" ]  && opts="${opts},nobrowse"
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.4.2] - 2026-03-26
+
+### Fixed
+- **Finder hangs permanently on file delete** — removed `local` mount option. With `local`, macOS uses on-volume trash (`.Trashes/<uid>/`) which triggers an `auto_xattr` write into NTFS Alternate Data Streams that blocks the FUSE kernel channel indefinitely. Without `local`, Finder deletes files directly without attempting the on-volume trash write. Note: deleted files do not currently go to Trash — this is a known limitation being investigated.
+
+### Changed
+- Restored `auto_xattr` mount option — required for file metadata resolution; without it, only directories are visible in Finder
+
+---
+
 ## [0.4.1] - 2026-03-26
 
 ### Fixed

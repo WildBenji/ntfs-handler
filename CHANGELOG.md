@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.4.0] - 2026-03-26
+
+### Changed
+- **Daemon is now event-driven instead of polling** — replaced the `sleep 10` poll loop with `diskutil activity`, which fires only when disks actually connect or disconnect. The daemon no longer touches the disk subsystem during sleep/wake transitions, which was the root cause of the `IOMediaBSDClient` kernel panic on logout/wake. Zero CPU usage when idle.
+
+### Fixed
+- **Disk reconnect not detected after unplug** — when a disk disappeared and was replugged, it was stuck in the seen-list and silently skipped. The daemon now removes a disk from the seen-list on `DiskDisappeared` so it gets re-mounted on reconnect.
+
+---
+
+## [0.3.5] - 2026-03-25
+
+### Fixed
+- **Daemon crash on startup** — `$HOME` is unset in the LaunchDaemon environment; `set -u` made the script exit immediately. Now falls back to `/var/root`
+- **Daemon crash on empty disk list** — Bash 3.2 (macOS default) treats empty arrays as unbound under `set -u`; fixed with `${arr[@]+"${arr[@]}"}` pattern
+- **Daemon "Operation not permitted"** — on macOS Tahoe+, raw block device access requires Full Disk Access even for root LaunchDaemons. Removed unnecessary `sudo` wrapper inside the daemon (already runs as root) which was creating a different security context. Documented FDA requirement for ntfs-3g
+- **Temp file leaks on error paths** — `record_mount()`, `record_unmount()`, daemon loop, and `install_sudoers()` now clean up `mktemp` files on every failure branch (`mv` failure, `sudo cp` failure, etc.) instead of leaking them in `/tmp`
+- **Daemon log grows unbounded** — `/var/log/ntfs-daemon.log` is now rotated to a timestamped file when it exceeds 10 MB, checked at the top of each poll loop
+- **Sudoers rmdir too permissive** — the NOPASSWD rule for `/bin/rmdir` is now scoped to `/bin/rmdir /Volumes/*` instead of allowing any directory; both `ntfs install` and `install.sh` updated
+
+### Changed
+- **Daemon mounts are now visible in Finder** — previously daemon-mounted drives were hidden (`nobrowse`), which confused users because macOS briefly shows the drive read-only, then it disappears when re-mounted read-write by the daemon
+- **ntfs-3g errors are no longer suppressed** — mount failures now show the actual ntfs-3g error message instead of a generic "Failed to mount" so users can diagnose issues
+
+---
+
 ## [0.3.4] - 2026-03-22
 
 ### Added

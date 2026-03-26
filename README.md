@@ -11,6 +11,7 @@ macOS can read NTFS drives but refuses to write to them out of the box. This fix
 - A Mac running macOS Monterey (12) or later
 - An internet connection
 - About 5 minutes
+- **No Paragon NTFS or Tuxera NTFS installed.** These commercial NTFS drivers use kernel extensions that clash with macFUSE. Having both loaded at the same time can cause kernel panics (crashes during sleep/wake). Uninstall them before using ntfs-handler.
 
 That's it. No account, no license, no payment.
 
@@ -27,6 +28,14 @@ bash <(curl -fsSL https://raw.githubusercontent.com/WildBenji/ntfs-handler/main/
 The installer will walk you through everything. The only part that requires a manual step is **macFUSE** — macOS requires you to approve it in Security settings because it's a low-level system component. The installer tells you exactly what to do.
 
 **After macFUSE is approved you must restart your Mac** before it works.
+
+If you cloned the repo instead, run the installer from the repo directory:
+
+```sh
+bash install.sh
+```
+
+> **Note:** All the commands below (like `ntfs list`, `sudo ntfs daemon install`) assume you've run the installer first. If you're running directly from the cloned repo without installing, use `./ntfs` instead of `ntfs`.
 
 ---
 
@@ -86,7 +95,15 @@ If you want drives to mount automatically every time you plug one in, run this o
 sudo ntfs daemon install
 ```
 
-After that, plugging in an NTFS drive will mount it automatically within about 10 seconds. No commands needed.
+After that, plugging in an NTFS drive will mount it automatically within a few seconds. No commands needed. The drive will appear in Finder just like any other disk.
+
+**Important (macOS Sequoia / Tahoe and later):** The auto-mount daemon needs Full Disk Access for ntfs-3g, otherwise macOS blocks it from accessing the drive.
+
+1. Find where ntfs-3g is installed: `which ntfs-3g`
+2. Open **System Settings → Privacy & Security → Full Disk Access**
+3. Click **+**, press **⌘⇧G**, paste the path (usually `/opt/homebrew/bin/ntfs-3g`), and add it
+
+You only need to do this once. Manual mounting from Terminal (`ntfs mount`) works without this step because Terminal already has Full Disk Access.
 
 To turn it off:
 
@@ -130,6 +147,9 @@ Open Finder, press **⌘⇧G**, and type `/Volumes/` — your drive should be li
 **Stale "mounted" entry for a drive I already unplugged**
 Run `ntfs status` — it cleans those up automatically.
 
+**Kernel panic (crash) during sleep or wake**
+You probably have Paragon NTFS or Tuxera NTFS installed alongside macFUSE. These kernel-level NTFS drivers conflict with macFUSE — both try to handle the same disk, and the kernel panics when it can't resolve the conflict. Uninstall Paragon/Tuxera completely, then restart your Mac.
+
 ---
 
 ## Uninstall
@@ -154,13 +174,13 @@ rm -f ~/.ntfs-mounts              # remove mount records
 
 **Performance.** This uses a user-space driver, not a kernel driver. It works great for everyday use — documents, photos, music, videos. On very large file transfers (100 GB+) it will be slower than a native driver would be.
 
-**Auto-mount checks every 10 seconds.** When you plug in a drive, it may take up to 10 seconds to mount automatically.
+**Auto-mount latency.** The daemon reacts to disk events as they happen, so drives typically mount within a few seconds of being plugged in.
 
 ---
 
 ## License
 
-Public domain. No copyright claimed. Use, copy, modify, sell — no restrictions, no attribution required.
+Free and open source, forever. Use it, copy it, modify it, share it — but don't sell it. This project exists so nobody has to pay for basic NTFS support on macOS.
 
 ---
 
@@ -169,7 +189,7 @@ Public domain. No copyright claimed. Use, copy, modify, sell — no restrictions
 - **Disk info:** `diskutil info -plist` + `plutil` — structured plist parsing
 - **Mount options:** `local,allow_other,auto_xattr,windows_names,volname=<name>` (+ `nobrowse` unless `--visible`, + `ro` if `--readonly`, + `recover` on retry)
 - **Eject sequence:** `umount` (waits for FUSE teardown) → `diskutil unmountDisk force` (clears Disk Arbitration auto-remount) → `diskutil eject` (SCSI STOP UNIT)
-- **Daemon:** LaunchDaemon at `/Library/LaunchDaemons/com.ntfshandler.automount.plist`, runs as root, polls every `$NTFS_DAEMON_POLL_INTERVAL` seconds (default: 10); retries failed mounts; clears seen-list on start
+- **Daemon:** LaunchDaemon at `/Library/LaunchDaemons/com.ntfshandler.automount.plist`, runs as root, event-driven via `diskutil activity` (no polling); initial scan on start; retries failed mounts on next disk event; clears seen-list on start
 - **Mount records:** `~/.ntfs-mounts` (user), `/var/run/ntfs-daemon-mounts` (daemon) — tab-separated, atomic `mktemp` + `mv`
 - **Shell:** bash 3.2+; ShellCheck clean
 - **Tested:** macOS Ventura 13, Sonoma 14 — Intel and Apple Silicon

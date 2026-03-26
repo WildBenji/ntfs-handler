@@ -1,12 +1,12 @@
 #!/bin/bash
 # ntfs — Free NTFS read/write for macOS
 # https://github.com/WildBenji/ntfs-handler
-# Public domain — no restrictions on use.
+# Free and open source — not for resale.
 
 set -euo pipefail
 
-VERSION="0.3.4"
-MOUNT_RECORD="$HOME/.ntfs-mounts"
+VERSION="0.4.0"
+MOUNT_RECORD="${HOME:-/var/root}/.ntfs-mounts"
 DAEMON_MOUNT_RECORD="/var/run/ntfs-daemon-mounts"
 DAEMON_PLIST="/Library/LaunchDaemons/com.ntfshandler.automount.plist"
 DAEMON_LOG="/var/log/ntfs-daemon.log"
@@ -25,6 +25,16 @@ ok()   { printf "${GREEN}✓${NC}  %s\n" "$*"; }
 warn() { printf "${YELLOW}▲${NC}  %s\n" "$*"; }
 err()  { printf "${RED}✗${NC}  %s\n" "$*" >&2; }
 die()  { err "$*"; exit 1; }
+
+# ── Privilege helper ─────────────────────────────────────────────────────────
+# When running as root (e.g. from the LaunchDaemon), skip sudo — calling sudo
+# inside a LaunchDaemon can create a different security context that loses
+# the daemon's device-access privileges.
+if [ "$(id -u)" -eq 0 ]; then
+    _sudo() { "$@"; }
+else
+    _sudo() { sudo "$@"; }
+fi
 
 # ── Dependency Check ─────────────────────────────────────────────────────────
 check_deps() {
@@ -128,7 +138,7 @@ record_mount() {
     local tmp; tmp=$(mktemp)
     [ -f "$record_file" ] && grep -v "^${disk_id}	" "$record_file" > "$tmp" 2>/dev/null || true
     printf '%s\t%s\n' "$disk_id" "$mount_point" >> "$tmp"
-    mv "$tmp" "$record_file"
+    mv "$tmp" "$record_file" || { rm -f "$tmp"; return 1; }
 }
 
 record_unmount() {
@@ -187,18 +197,15 @@ do_mount() {
     mount_point=$(get_mount_point "$vol_name" "$disk_id")
 
     printf "${BLUE}=>${NC}  Mounting ${BOLD}%s${NC} (%s) → %s\n" "$vol_name" "$disk_id" "$mount_point"
-    sudo mkdir -p "$mount_point"
+    _sudo mkdir -p "$mount_point"
 
-    # If macOS has already auto-mounted the volume (read-only), kick it first.
-    # Use 'force' so it works even if Finder has it open.
+    # Always force-release any macOS mount right before ntfs-3g to minimise
+    # the race window where Disk Arbitration can re-grab the device.
     if mount 2>/dev/null | grep -qF "/dev/$disk_id on"; then
         info "Releasing macOS read-only mount..."
-        if ! sudo diskutil unmount force "$disk_id" &>/dev/null; then
-            err "Could not release macOS mount on $disk_id — is Finder using it?"
-            sudo rmdir "$mount_point" 2>/dev/null || true
-            return 1
-        fi
     fi
+    _sudo diskutil unmount force "$disk_id" &>/dev/null || true
+    sleep 1  # let the kernel fully release the device node
 
     # volname sets what Finder displays; strip commas (option delimiter) from the name
     local volname_opt="${vol_name//,/}"
@@ -206,19 +213,19 @@ do_mount() {
     [ -n "$readonly" ] && opts="${opts},ro"
     [ -z "$visible" ]  && opts="${opts},nobrowse"
 
-    if sudo "$ntfs3g" "$device" "$mount_point" -o "$opts" 2>/dev/null; then
+    if _sudo "$ntfs3g" "$device" "$mount_point" -o "$opts"; then
         ok "Mounted ${BOLD}$vol_name${NC} at $mount_point"
         [ -z "$visible" ] && printf "    ${DIM}Hidden from Finder — Go → Go to Folder (⌘⇧G) → %s${NC}\n" "$mount_point"
         record_mount "$disk_id" "$mount_point" "$rec_file"
         return 0
-    elif sudo "$ntfs3g" "$device" "$mount_point" -o "${opts},recover" 2>/dev/null; then
+    elif _sudo "$ntfs3g" "$device" "$mount_point" -o "${opts},recover"; then
         warn "Mounted ${BOLD}$vol_name${NC} with recovery (volume was not safely ejected from Windows)"
         [ -z "$visible" ] && printf "    ${DIM}Hidden from Finder — Go → Go to Folder (⌘⇧G) → %s${NC}\n" "$mount_point"
         record_mount "$disk_id" "$mount_point" "$rec_file"
         return 0
     else
         err "Failed to mount $vol_name ($disk_id)"
-        sudo rmdir "$mount_point" 2>/dev/null || true
+        _sudo rmdir "$mount_point" 2>/dev/null || true
         return 1
     fi
 }
@@ -231,7 +238,7 @@ do_unmount() {
     if ! mount 2>/dev/null | grep -qF " on $mount_point "; then
         warn "$mount_point is not mounted — cleaning stale record"
         record_unmount "$disk_id"
-        sudo rmdir "$mount_point" 2>/dev/null || true
+        _sudo rmdir "$mount_point" 2>/dev/null || true
         return 0
     fi
 
@@ -239,10 +246,10 @@ do_unmount() {
 
     # umount blocks until ntfs-3g FUSE process fully exits — required for eject to work.
     # diskutil unmount force is faster but returns before FUSE teardown, breaking eject.
-    if sudo umount "$mount_point" &>/dev/null \
-        || sudo diskutil unmount force "$disk_id" &>/dev/null; then
+    if _sudo umount "$mount_point" &>/dev/null \
+        || _sudo diskutil unmount force "$disk_id" &>/dev/null; then
         ok "Unmounted $mount_point"
-        sudo rmdir "$mount_point" 2>/dev/null || true
+        _sudo rmdir "$mount_point" 2>/dev/null || true
         record_unmount "$disk_id"
 
         if [ -n "$eject" ]; then
@@ -251,8 +258,8 @@ do_unmount() {
             if [ "$parent" != "$disk_id" ] && diskutil info "$parent" &>/dev/null; then
                 # Immediately release any Disk Arbitration auto-remounts that
                 # race us after umount, then eject to send the spin-down command.
-                sudo diskutil unmountDisk force "$parent" &>/dev/null || true
-                if sudo diskutil eject "$parent" &>/dev/null; then
+                _sudo diskutil unmountDisk force "$parent" &>/dev/null || true
+                if _sudo diskutil eject "$parent" &>/dev/null; then
                     ok "Ejected ${BOLD}$(basename "$mount_point")${NC} — safe to unplug"
                 elif ! diskutil info "$parent" &>/dev/null; then
                     # Disk disappeared — macOS already ejected it
@@ -485,8 +492,8 @@ cmd_unmount() {
                 idx=$((choice-1))
                 parent=$(echo "${NTFS_DISKS[$idx]}" | sed 's/s[0-9]*$//; s/p[0-9]*$//')
                 printf "${BLUE}=>${NC}  Ejecting ${BOLD}%s${NC}...\n" "${NTFS_VOLNAMES[$idx]}"
-                sudo diskutil unmountDisk force "$parent" &>/dev/null || true
-                if sudo diskutil eject "$parent" &>/dev/null; then
+                _sudo diskutil unmountDisk force "$parent" &>/dev/null || true
+                if _sudo diskutil eject "$parent" &>/dev/null; then
                     ok "Ejected ${BOLD}${NTFS_VOLNAMES[$idx]}${NC} — safe to unplug"
                 elif ! diskutil info "$parent" &>/dev/null; then
                     ok "Ejected ${BOLD}${NTFS_VOLNAMES[$idx]}${NC} — safe to unplug"
@@ -677,74 +684,90 @@ PLIST
     esac
 }
 
+# ── Internal: attempt to mount one disk from the daemon ──────────────────────
+_daemon_try_mount() {
+    local disk_id="$1" seen_file="$2"
+
+    # Skip if already processed successfully this session
+    grep -qxF "$disk_id" "$seen_file" 2>/dev/null && return 0
+
+    # Only handle NTFS partitions
+    local fs_type
+    fs_type=$(diskutil_plist_key "$disk_id" FilesystemType 2>/dev/null)
+    [[ "$fs_type" == *ntfs* ]] || return 0
+
+    printf '[%s] New NTFS volume: %s\n' "$(date '+%H:%M:%S')" "$disk_id"
+
+    # Skip if already mounted read-write
+    if mount 2>/dev/null | grep "/dev/$disk_id on" | grep -qv "read-only"; then
+        printf '[%s] %s already mounted rw, skipping\n' "$(date '+%H:%M:%S')" "$disk_id"
+        printf '%s\n' "$disk_id" >> "$seen_file"
+        return 0
+    fi
+
+    local vol_name
+    vol_name=$(diskutil_plist_key "$disk_id" VolumeName)
+    if [ -z "$vol_name" ] || [ "$vol_name" = "Not applicable" ]; then
+        vol_name="NTFS_${disk_id}"
+    fi
+
+    if do_mount "$disk_id" "$vol_name" "1" "" "$DAEMON_MOUNT_RECORD"; then
+        chmod 644 "$DAEMON_MOUNT_RECORD" 2>/dev/null || true
+        printf '%s\n' "$disk_id" >> "$seen_file"
+    fi
+    # On failure: do not add to seen_file — next disk event will retry
+}
+
 # ── Internal: daemon loop (called by LaunchDaemon as root) ───────────────────
 __daemon_run() {
     local seen_file="/var/run/ntfs-daemon-seen"
     local pid_file="/var/run/ntfs-daemon.pid"
 
-    find_ntfs3g &>/dev/null || { echo "ntfs-3g not found, daemon exiting"; exit 1; }
+    find_ntfs3g &>/dev/null || { printf '[%s] ntfs-3g not found, daemon exiting\n' "$(date '+%Y-%m-%d %H:%M:%S')"; exit 1; }
 
     echo $$ > "$pid_file"
     trap 'rm -f "$pid_file"; exit 0' TERM INT
 
-    # Clear seen_file on every start so drives already plugged in get mounted.
-    # Without this, a daemon restart (not reboot) would silently skip existing drives.
     : > "$seen_file"
     printf '[%s] ntfs-daemon v%s started (PID %d)\n' \
         "$(date '+%Y-%m-%d %H:%M:%S')" "$VERSION" "$$"
 
+    # Initial scan: mount any NTFS drives already connected at startup
+    local disk_id
+    while IFS= read -r disk_id; do
+        [ -z "$disk_id" ] && continue
+        _daemon_try_mount "$disk_id" "$seen_file"
+    done < <(diskutil list 2>/dev/null | awk '/Microsoft Basic Data|Windows_NTFS/ {print $NF}')
+
+    # Event-driven: react to Disk Arbitration events instead of polling.
+    # Only runs disk operations when the kernel signals a change — never touches
+    # the disk subsystem during sleep/wake, which prevented kernel panics with polling.
     while true; do
-        local current_disks
-        current_disks=$(diskutil list 2>/dev/null \
-            | awk '/Microsoft Basic Data|Windows_NTFS/ {print $NF}' | sort || true)
-
-        local failed_disks=()
-
-        while IFS= read -r disk_id; do
-            [ -z "$disk_id" ] && continue
-            grep -qxF "$disk_id" "$seen_file" 2>/dev/null && continue
-
-            printf '[%s] New NTFS volume: %s\n' "$(date '+%H:%M:%S')" "$disk_id"
-
-            # Skip only if already mounted read-write (ntfs-3g or user manual mount).
-            # If macOS auto-mounted it read-only, fall through so do_mount can
-            # release it and remount read-write.
-            if mount 2>/dev/null | grep "/dev/$disk_id on" | grep -qv "read-only"; then
-                printf '[%s] %s already mounted rw, skipping\n' "$(date '+%H:%M:%S')" "$disk_id"
-                continue
+        while IFS= read -r event; do
+            # Rotate log at 10 MB
+            if [ -f "$DAEMON_LOG" ] && [ "$(stat -f%z "$DAEMON_LOG" 2>/dev/null || echo 0)" -gt 10485760 ]; then
+                mv "$DAEMON_LOG" "${DAEMON_LOG}.$(date +%Y%m%d%H%M%S)"
+                printf '[%s] Log rotated\n' "$(date '+%Y-%m-%d %H:%M:%S')"
             fi
 
-            local fs_type vol_name
-            fs_type=$(diskutil_plist_key "$disk_id" FilesystemType)
-            [[ "$fs_type" == *ntfs* ]] || continue
+            # Extract partition identifier from event line (matches disk4s1, not disk4)
+            disk_id=$(printf '%s' "$event" | grep -oE "'disk[0-9]+s[0-9]+'" | head -1 | tr -d "'")
+            [ -n "$disk_id" ] || continue
 
-            vol_name=$(diskutil_plist_key "$disk_id" VolumeName)
-            if [ -z "$vol_name" ] || [ "$vol_name" = "Not applicable" ]; then
-                vol_name="NTFS_${disk_id}"
+            if [[ "$event" == *"DiskAppeared"* ]] || [[ "$event" == *"DiskMounted"* ]]; then
+                _daemon_try_mount "$disk_id" "$seen_file"
+            elif [[ "$event" == *"DiskDisappeared"* ]]; then
+                # Remove from seen_file so it gets re-mounted if reconnected
+                local tmp_seen; tmp_seen=$(mktemp)
+                grep -vxF "$disk_id" "$seen_file" > "$tmp_seen" 2>/dev/null || true
+                mv "$tmp_seen" "$seen_file" || { rm -f "$tmp_seen"; true; }
             fi
 
-            # Kick macOS read-only auto-mount before mounting rw
-            diskutil unmount force "$disk_id" &>/dev/null || true
+        done < <(diskutil activity 2>/dev/null)
 
-            if do_mount "$disk_id" "$vol_name" "" "" "$DAEMON_MOUNT_RECORD"; then
-                chmod 644 "$DAEMON_MOUNT_RECORD" 2>/dev/null || true
-            else
-                failed_disks+=("$disk_id")
-            fi
-
-        done <<< "$current_disks"
-
-        # Write all currently-connected disks as seen, then remove failed mounts
-        # so the daemon retries them on the next poll instead of giving up.
-        printf '%s\n' "$current_disks" > "$seen_file"
-        local fd tmp_seen
-        for fd in "${failed_disks[@]}"; do
-            tmp_seen=$(mktemp)
-            grep -vxF "$fd" "$seen_file" > "$tmp_seen" 2>/dev/null || true
-            mv "$tmp_seen" "$seen_file"
-        done
-
-        sleep "${NTFS_DAEMON_POLL_INTERVAL:-10}"
+        # diskutil activity exited unexpectedly — restart it after a short pause
+        printf '[%s] diskutil activity exited, restarting in 5s\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+        sleep 5
     done
 }
 
@@ -785,7 +808,7 @@ install_sudoers() {
 # ntfs-handler — allow staff group to run mount/eject commands without a password.
 # Installed by: ntfs install
 # Remove with:  sudo rm /etc/sudoers.d/ntfs-handler
-%staff ALL=(root) NOPASSWD: /usr/local/bin/ntfs-3g, /opt/homebrew/bin/ntfs-3g, /usr/sbin/diskutil, /sbin/umount, /bin/rmdir
+%staff ALL=(root) NOPASSWD: /usr/local/bin/ntfs-3g, /opt/homebrew/bin/ntfs-3g, /usr/sbin/diskutil, /sbin/umount, /bin/rmdir /Volumes/*
 EOF
 
     if ! visudo -c -f "$tmp" &>/dev/null; then
@@ -794,10 +817,15 @@ EOF
         return 1
     fi
 
-    sudo cp "$tmp" "$sudoers_file"
-    sudo chown root:wheel "$sudoers_file"
-    sudo chmod 440 "$sudoers_file"
-    rm -f "$tmp"
+    if sudo cp "$tmp" "$sudoers_file" \
+        && sudo chown root:wheel "$sudoers_file" \
+        && sudo chmod 440 "$sudoers_file"; then
+        rm -f "$tmp"
+    else
+        rm -f "$tmp"
+        err "Failed to install sudoers rule"
+        return 1
+    fi
     ok "Passwordless mounting enabled (rule saved to $sudoers_file)"
     info "To remove it later: sudo rm $sudoers_file"
 }

@@ -15,7 +15,7 @@ die()  { err "$*"; exit 1; }
 [[ "$(uname)" == "Darwin" ]] || die "This installer is for macOS only."
 
 printf "\n${BOLD}ntfs-handler installer${NC}\n"
-printf "Free NTFS read/write for macOS — no license, no cost, no catch.\n\n"
+printf "Free NTFS read/write for macOS — open source, not for resale.\n\n"
 
 # macOS version check
 macos_major=$(sw_vers -productVersion | cut -d. -f1)
@@ -139,18 +139,21 @@ if [[ "${yn:-}" =~ ^[Yy]$ ]]; then
 # ntfs-handler — allow staff group to run mount/eject commands without a password.
 # Installed by: install.sh
 # Remove with:  sudo rm /etc/sudoers.d/ntfs-handler
-%staff ALL=(root) NOPASSWD: /usr/local/bin/ntfs-3g, /opt/homebrew/bin/ntfs-3g, /usr/sbin/diskutil, /sbin/umount, /bin/rmdir
+%staff ALL=(root) NOPASSWD: /usr/local/bin/ntfs-3g, /opt/homebrew/bin/ntfs-3g, /usr/sbin/diskutil, /sbin/umount, /bin/rmdir /Volumes/*
 SUDOERS
-    if visudo -c -f "$tmp" &>/dev/null; then
-        sudo cp "$tmp" "$sudoers_file"
-        sudo chown root:wheel "$sudoers_file"
-        sudo chmod 440 "$sudoers_file"
+    if ! visudo -c -f "$tmp" &>/dev/null; then
+        rm -f "$tmp"
+        err "sudoers syntax check failed — skipping"
+    elif sudo cp "$tmp" "$sudoers_file" \
+        && sudo chown root:wheel "$sudoers_file" \
+        && sudo chmod 440 "$sudoers_file"; then
+        rm -f "$tmp"
         ok "Passwordless mounting enabled (rule saved to $sudoers_file)"
         info "To remove it later: sudo rm $sudoers_file"
     else
-        err "sudoers syntax check failed — skipping"
+        rm -f "$tmp"
+        err "Failed to install sudoers rule"
     fi
-    rm -f "$tmp"
 else
     info "Skipped — you will be prompted for your password when mounting/ejecting"
 fi

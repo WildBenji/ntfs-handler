@@ -104,56 +104,19 @@ ntfs version >/dev/null && ok "ntfs is working"
 
 # Optional: auto-mount daemon
 echo
-read -rp "Enable auto-mount? NTFS drives will mount automatically when plugged in. [y/N] " yn
-if [[ "${yn:-}" =~ ^[Yy]$ ]]; then
-    sudo ntfs daemon install
+if [ -f /Library/LaunchDaemons/com.ntfshandler.automount.plist ]; then
+    ok "Auto-mount daemon already installed"
+else
+    read -rp "Enable auto-mount? NTFS drives will mount automatically when plugged in. [y/N] " yn
+    if [[ "${yn:-}" =~ ^[Yy]$ ]]; then
+        sudo ntfs daemon install
+    fi
 fi
 
-# Optional: passwordless sudo for mount/eject
+# Optional: passwordless sudo for mount/eject — delegate to the installed binary
+# so the prompt and writer live in one place (see install_sudoers in ntfs).
 echo
-printf "  ${BOLD}Password-free mounting (optional)${NC}\n"
-echo
-printf "  Right now, every time you mount or eject a drive, macOS asks for your\n"
-printf "  password. This is because mounting requires root access.\n"
-echo
-printf "  Saying yes adds a rule to /etc/sudoers.d/ntfs-handler that lets your\n"
-printf "  account run the specific commands ntfs uses (ntfs-3g, diskutil, umount)\n"
-printf "  without typing a password. Only those exact programs are affected —\n"
-printf "  everything else still requires your password as usual.\n"
-echo
-printf "  ${YELLOW}▲${NC}  Security note: any admin user on this Mac will be able to mount and\n"
-printf "  eject drives without a password. If you are the only user, or you trust\n"
-printf "  everyone with an admin account on this machine, this is fine. If you share\n"
-printf "  your Mac with other people who have admin accounts, say no.\n"
-echo
-printf "  Saying no changes nothing — you will keep being asked for your password\n"
-printf "  when mounting or ejecting, which is the default macOS behavior.\n"
-echo
-printf "  ${DIM}This is completely reversible: sudo rm /etc/sudoers.d/ntfs-handler${NC}\n"
-echo
-read -rp "  Skip password prompts for ntfs? [y/N] " yn
-if [[ "${yn:-}" =~ ^[Yy]$ ]]; then
-    sudoers_file="/etc/sudoers.d/ntfs-handler"
-    tmp=$(mktemp)
-    cat > "$tmp" <<'SUDOERS'
-# ntfs-handler — allow staff group to run mount/eject commands without a password.
-# Installed by: install.sh
-# Remove with:  sudo rm /etc/sudoers.d/ntfs-handler
-%staff ALL=(root) NOPASSWD: /usr/local/bin/ntfs-3g, /opt/homebrew/bin/ntfs-3g, /usr/sbin/diskutil, /sbin/umount, /bin/rmdir
-SUDOERS
-    if visudo -c -f "$tmp" &>/dev/null; then
-        sudo cp "$tmp" "$sudoers_file"
-        sudo chown root:wheel "$sudoers_file"
-        sudo chmod 440 "$sudoers_file"
-        ok "Passwordless mounting enabled (rule saved to $sudoers_file)"
-        info "To remove it later: sudo rm $sudoers_file"
-    else
-        err "sudoers syntax check failed — skipping"
-    fi
-    rm -f "$tmp"
-else
-    info "Skipped — you will be prompted for your password when mounting/ejecting"
-fi
+ntfs __install-sudoers
 
 echo
 printf "${GREEN}${BOLD}All done!${NC}\n\n"

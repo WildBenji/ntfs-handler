@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-VERSION="0.3.4"
+VERSION="0.3.5"
 MOUNT_RECORD="$HOME/.ntfs-mounts"
 DAEMON_MOUNT_RECORD="/var/run/ntfs-daemon-mounts"
 DAEMON_PLIST="/Library/LaunchDaemons/com.ntfshandler.automount.plist"
@@ -191,7 +191,7 @@ do_mount() {
 
     # If macOS has already auto-mounted the volume (read-only), kick it first.
     # Use 'force' so it works even if Finder has it open.
-    if mount 2>/dev/null | grep -qF "/dev/$disk_id on"; then
+    if mount 2>/dev/null | grep -qE "^/dev/$disk_id on "; then
         info "Releasing macOS read-only mount..."
         if ! sudo diskutil unmount force "$disk_id" &>/dev/null; then
             err "Could not release macOS mount on $disk_id — is Finder using it?"
@@ -653,7 +653,10 @@ PLIST
             [ "$(id -u)" -eq 0 ] || die "Run with sudo: sudo ntfs daemon uninstall"
             launchctl unload "$DAEMON_PLIST" 2>/dev/null \
                 || launchctl bootout system "$DAEMON_PLIST" 2>/dev/null || true
-            rm -f "$DAEMON_PLIST"
+            rm -f "$DAEMON_PLIST" \
+                  "$DAEMON_MOUNT_RECORD" \
+                  /var/run/ntfs-daemon-seen \
+                  /var/run/ntfs-daemon.pid
             ok "Auto-mount daemon removed"
             ;;
 
@@ -709,7 +712,7 @@ __daemon_run() {
             # Skip only if already mounted read-write (ntfs-3g or user manual mount).
             # If macOS auto-mounted it read-only, fall through so do_mount can
             # release it and remount read-write.
-            if mount 2>/dev/null | grep "/dev/$disk_id on" | grep -qv "read-only"; then
+            if mount 2>/dev/null | grep -E "^/dev/$disk_id on " | grep -qv "read-only"; then
                 printf '[%s] %s already mounted rw, skipping\n' "$(date '+%H:%M:%S')" "$disk_id"
                 continue
             fi
@@ -744,13 +747,21 @@ __daemon_run() {
             mv "$tmp_seen" "$seen_file"
         done
 
-        sleep "${NTFS_DAEMON_POLL_INTERVAL:-10}"
+        local interval="${NTFS_DAEMON_POLL_INTERVAL:-10}"
+        [[ "$interval" =~ ^[0-9]+$ ]] || interval=10
+        sleep "$interval"
     done
 }
 
 # ── cmd: install ──────────────────────────────────────────────────────────────
 install_sudoers() {
     local sudoers_file="/etc/sudoers.d/ntfs-handler"
+
+    if [ -f "$sudoers_file" ]; then
+        ok "Passwordless mounting already configured ($sudoers_file)"
+        info "To remove it: sudo rm $sudoers_file"
+        return 0
+    fi
 
     echo
     printf "  ${BOLD}Password-free mounting (optional)${NC}\n"
@@ -763,10 +774,11 @@ install_sudoers() {
     printf "  without typing a password. Only those exact programs are affected —\n"
     printf "  everything else still requires your password as usual.\n"
     echo
-    printf "  ${YELLOW}▲${NC}  ${BOLD}Security note:${NC} any admin user on this Mac will be able to mount and\n"
-    printf "  eject drives without a password. If you are the only user, or you trust\n"
-    printf "  everyone with an admin account on this machine, this is fine. If you share\n"
-    printf "  your Mac with other people who have admin accounts, say no.\n"
+    printf "  ${YELLOW}▲${NC}  ${BOLD}Security note:${NC} any admin user on this Mac will be able to run the\n"
+    printf "  whitelisted commands without a password. That includes ${BOLD}diskutil${NC} — so\n"
+    printf "  ${BOLD}erase${NC} and ${BOLD}partition${NC} operations also become passwordless. If you are the\n"
+    printf "  only user, or you trust every admin on this Mac, this is fine. If you share\n"
+    printf "  your Mac with other admin users, say no.\n"
     echo
     printf "  Saying ${BOLD}no${NC} changes nothing — you will keep being asked for your password\n"
     printf "  when mounting or ejecting, which is the default macOS behavior.\n"
@@ -850,7 +862,7 @@ cmd_help() {
     printf "  status                       Show mounted volumes (cleans stale records)\n"
     printf "  daemon  <subcommand>         Manage auto-mount daemon\n"
     printf "  doctor                       Check system health and dependencies\n"
-    printf "  install                      Copy ntfs to /usr/local/bin\n\n"
+    printf "  install                      Install ntfs, zsh completion, and (optionally) passwordless sudoers rule\n\n"
     printf "${BOLD}Mount options:${NC}\n"
     printf "  --visible, -v    Show in Finder (default: hidden)\n"
     printf "  --readonly, -r   Mount read-only\n"
@@ -881,6 +893,7 @@ case "$cmd" in
     doctor|check)       cmd_doctor  "$@" ;;
     install)            cmd_install "$@" ;;
     __daemon-run)       __daemon_run ;;
+    __install-sudoers)  install_sudoers ;;
     version|-V|--version) printf "ntfs %s\n" "$VERSION" ;;
     help|-h|--help)     cmd_help ;;
     *)                  err "Unknown command: $cmd"; cmd_help; exit 1 ;;

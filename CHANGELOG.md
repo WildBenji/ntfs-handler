@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.5] - 2026-04-29
+
+### Fixed
+- **`install.sh` crashed before the sudoers prompt** — `${DIM}` was referenced but never defined, and `set -u` aborted the script. Users who installed via the curl one-liner could not reach the passwordless-mounting prompt at all. The 0.3.4 headline feature is now actually reachable from the primary install path.
+- **`/dev/$disk_id on` greps anchored** — `do_mount` and the daemon mount-state check used unanchored substring matches; `disk2s1` could falsely match `disk2s11`, leading to incorrect "already mounted" decisions on systems with double-digit partition numbers.
+- **`NTFS_DAEMON_POLL_INTERVAL` validated** — non-numeric values would crash `sleep`, and with `KeepAlive=true` the daemon would crash-loop. Non-numeric input now falls back to the 10s default.
+
+### Changed
+- **Sudoers prompt deduplicated** — `install.sh` no longer carries its own copy of the security note and writer; both call sites delegate to `install_sudoers` in the `ntfs` script via a hidden `__install-sudoers` subcommand. Single source of truth.
+- **`install_sudoers` is idempotent** — re-running `ntfs install` (or `install.sh`) when `/etc/sudoers.d/ntfs-handler` already exists prints a confirmation and returns instead of re-prompting. The daemon prompt in `install.sh` now also short-circuits when the LaunchDaemon plist is already present.
+- **Sudoers security note sharpened** — the warning now spells out that `diskutil` becoming passwordless includes erase and partition operations, not just mount/eject.
+- **`daemon uninstall` cleans up runtime state** — also removes `/var/run/ntfs-daemon-mounts`, `/var/run/ntfs-daemon-seen`, and `/var/run/ntfs-daemon.pid` so `ntfs status` doesn't surface stale entries after a reinstall. Log file preserved for post-mortem.
+- **`ntfs install` help text** now reflects what the command actually does (zsh completion + optional sudoers rule), not just "Copy ntfs to /usr/local/bin".
+
+---
+
 ## [0.3.4] - 2026-03-22
 
 ### Added

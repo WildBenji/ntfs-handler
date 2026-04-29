@@ -33,7 +33,8 @@ _ntfs() {
             case $words[2] in
                 mount|m)
                     _arguments \
-                        '(-v --visible)'{-v,--visible}'[Show in Finder sidebar]' \
+                        '--hidden[Hide from Finder (default: visible)]' \
+                        '(-v --visible)'{-v,--visible}'[Visible in Finder (default; kept for backwards compat)]' \
                         '(-r --readonly)'{-r,--readonly}'[Mount read-only]' \
                         '(-a --all)'{-a,--all}'[Mount all detected volumes]'
                     ;;

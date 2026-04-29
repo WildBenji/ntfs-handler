@@ -50,12 +50,12 @@ ntfs mount
 
 Pick a drive from the menu. That's it — you can now read and write files on it.
 
-The drive won't show up in the Finder sidebar by default (this avoids a macOS quirk). To open it, press **⌘⇧G** in Finder and type `/Volumes/YourDriveName`.
+The drive shows up in the Finder sidebar by default.
 
-If you want it in the Finder sidebar:
+If you'd rather keep it out of Finder (still accessible at `/Volumes/YourDriveName` via ⌘⇧G):
 
 ```sh
-ntfs mount --visible
+ntfs mount --hidden
 ```
 
 ### Safely unplug a drive
@@ -103,7 +103,7 @@ sudo ntfs daemon uninstall
 | `ntfs list` | Show connected NTFS drives |
 | `ntfs mount` | Mount a drive (interactive menu) |
 | `ntfs mount --all` | Mount all connected NTFS drives |
-| `ntfs mount --visible` | Mount and show in Finder sidebar |
+| `ntfs mount --hidden` | Mount without showing in Finder |
 | `ntfs unmount` | Unmount a drive |
 | `ntfs eject` | Unmount and safely spin down the disk |
 | `ntfs status` | Show what's currently mounted |
@@ -125,7 +125,7 @@ The drive probably wasn't safely ejected from Windows last time. ntfs-handler wi
 Use `ntfs eject` next time instead of `ntfs unmount`. Eject sends the proper spin-down signal to the disk.
 
 **Shows as mounted but I can't see it**
-Open Finder, press **⌘⇧G**, and type `/Volumes/` — your drive should be listed there. Or run `ntfs mount --visible` to remount it with Finder sidebar visibility.
+If you mounted with `--hidden`, the drive won't appear in the Finder sidebar. Press **⌘⇧G** in Finder and type `/Volumes/` to find it, or remount without `--hidden` to put it in the sidebar.
 
 **Stale "mounted" entry for a drive I already unplugged**
 Run `ntfs status` — it cleans those up automatically.
@@ -167,7 +167,7 @@ Public domain. No copyright claimed. Use, copy, modify, sell — no restrictions
 ## Technical details
 
 - **Disk info:** `diskutil info -plist` + `plutil` — structured plist parsing
-- **Mount options:** `local,allow_other,auto_xattr,windows_names,volname=<name>` (+ `nobrowse` unless `--visible`, + `ro` if `--readonly`, + `recover` on retry)
+- **Mount options:** `local,allow_other,auto_xattr,windows_names,volname=<name>` (+ `nobrowse` if `--hidden`, + `ro` if `--readonly`, + `recover` on retry)
 - **Eject sequence:** `umount` (waits for FUSE teardown) → `diskutil unmountDisk force` (clears Disk Arbitration auto-remount) → `diskutil eject` (SCSI STOP UNIT)
 - **Daemon:** LaunchDaemon at `/Library/LaunchDaemons/com.ntfshandler.automount.plist`, runs as root, polls every `$NTFS_DAEMON_POLL_INTERVAL` seconds (default: 10); retries failed mounts; clears seen-list on start
 - **Mount records:** `~/.ntfs-mounts` (user), `/var/run/ntfs-daemon-mounts` (daemon) — tab-separated, atomic `mktemp` + `mv`

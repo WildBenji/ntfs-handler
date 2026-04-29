@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.6] - 2026-04-29
+
+### Changed
+- **Mounted drives are now visible in Finder by default** — `nobrowse` was on by default since 0.1, which kept drives out of the Finder sidebar and Go-to dialog. Most users wanted them visible; the original "macOS quirk" justification has not held up in practice.
+- **`--hidden` is the new opt-in** for the old behavior. The daemon also mounts drives visible by default, so plug-in → drive shows up in Finder within ~10 s.
+- **`--visible` / `-v` is preserved as a no-op** so existing scripts continue to work without modification.
+- README, help text, examples, and zsh completion updated to match the new default.
+
+---
+
 ## [0.3.5] - 2026-04-29
 
 ### Fixed

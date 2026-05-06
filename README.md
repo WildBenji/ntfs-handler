@@ -92,24 +92,20 @@ ntfs status
 If you want drives to mount automatically every time you plug one in, run this once:
 
 ```sh
-sudo ntfs daemon install
+ntfs daemon install
 ```
 
-After that, plugging in an NTFS drive will mount it automatically within a few seconds. No commands needed. The drive will appear in Finder just like any other disk.
+After that, plugging in an NTFS drive will mount it automatically within about 10 seconds. No commands needed. Auto-mount runs while you're logged in; logging out stops it.
 
-**Important (macOS Sequoia / Tahoe and later):** The auto-mount daemon needs Full Disk Access for ntfs-3g, otherwise macOS blocks it from accessing the drive.
-
-1. Find where ntfs-3g is installed: `which ntfs-3g`
-2. Open **System Settings → Privacy & Security → Full Disk Access**
-3. Click **+**, press **⌘⇧G**, paste the path (usually `/opt/homebrew/bin/ntfs-3g`), and add it
-
-You only need to do this once. Manual mounting from Terminal (`ntfs mount`) works without this step because Terminal already has Full Disk Access.
+> Earlier versions used a system-wide LaunchDaemon that required users to grant Full Disk Access to `ntfs-3g` in System Settings. The 0.5.0 LaunchAgent runs in your login session and inherits Finder/Terminal's TCC — no manual grant needed.
 
 To turn it off:
 
 ```sh
-sudo ntfs daemon uninstall
+ntfs daemon uninstall
 ```
+
+If a drive can't be mounted (for example, it was unsafely ejected from Windows in a way ntfs-3g can't recover), the agent gives up after 3 attempts to avoid log spam — you'll see a `Giving up on diskNsM` line in `ntfs daemon logs`. Plug the drive into a Windows machine, eject it cleanly, then plug it back into the Mac.
 
 ---
 
@@ -136,7 +132,13 @@ sudo ntfs daemon uninstall
 Run `ntfs doctor`. The most likely cause is macFUSE hasn't been approved yet — go to System Settings → Privacy & Security, find the macFUSE entry, click Allow, then restart.
 
 **Mount fails or says "dirty volume"**
-The drive probably wasn't safely ejected from Windows last time. ntfs-handler will try to recover it automatically. If it keeps failing, run `ntfs doctor`.
+The drive probably wasn't safely ejected from Windows last time. ntfs-handler will try to recover it automatically. If it keeps failing, run `ntfs doctor`. The auto-mount agent stops retrying after 3 failures to avoid log spam — `ntfs daemon logs` will show `Giving up on diskNsM`. Plug the drive into a Windows machine and eject it cleanly to fix the dirty bit.
+
+**Auto-mount stopped working after upgrading from a previous version**
+The old LaunchDaemon doesn't work on modern macOS. Migrate: `sudo ntfs daemon uninstall && sudo rm /etc/sudoers.d/ntfs-handler && ntfs install && ntfs daemon install`.
+
+**Can't delete files from a mounted drive**
+This was fixed in 0.4.0 by mapping mounted files to your user via `uid`/`gid` mount options. If you're seeing this on an older version, upgrade.
 
 **Drive still spinning after unplug**
 Use `ntfs eject` next time instead of `ntfs unmount`. Eject sends the proper spin-down signal to the disk.
@@ -155,11 +157,11 @@ You probably have Paragon NTFS or Tuxera NTFS installed alongside macFUSE. These
 ## Uninstall
 
 ```sh
-sudo ntfs daemon uninstall        # remove auto-mount (if you set it up)
+ntfs daemon uninstall             # remove auto-mount (if you set it up)
 sudo rm /usr/local/bin/ntfs       # remove the command
 sudo rm /usr/local/share/zsh/site-functions/_ntfs  # remove tab completion
 sudo rm -f /etc/sudoers.d/ntfs-handler  # remove passwordless rule (if installed)
-rm -f ~/.ntfs-mounts              # remove mount records
+rm -f ~/.ntfs-mounts ~/.ntfs-mounts-daemon ~/.ntfs-handler-sudoers-version
 ```
 
 ---
@@ -187,9 +189,12 @@ Free and open source, forever. Use it, copy it, modify it, share it — but don'
 ## Technical details
 
 - **Disk info:** `diskutil info -plist` + `plutil` — structured plist parsing
-- **Mount options:** `allow_other,auto_xattr,noappledouble,windows_names,volname=<name>` (+ `nobrowse` unless `--visible`, + `ro` if `--readonly`, + `recover` on retry)
-- **Eject sequence:** `umount` (waits for FUSE teardown) → `diskutil unmountDisk force` (clears Disk Arbitration auto-remount) → `diskutil eject` (SCSI STOP UNIT)
-- **Daemon:** LaunchDaemon at `/Library/LaunchDaemons/com.ntfshandler.automount.plist`, runs as root, polls every `$NTFS_DAEMON_POLL_INTERVAL` seconds (default: 10); retries failed mounts; clears seen-list on start
-- **Mount records:** `~/.ntfs-mounts` (user), `/var/run/ntfs-daemon-mounts` (daemon) — tab-separated, atomic `mktemp` + `mv`
+- **Mount options:** `allow_other,auto_xattr,noappledouble,windows_names,uid=$SUDO_UID,gid=$SUDO_GID,volname=<name>` (+ `nobrowse` if `--hidden`, + `ro` if `--readonly`, + `recover` on retry). `noappledouble` prevents Finder from hanging on move-to-trash. `uid`/`gid` map files to the invoking user so Finder can delete them; without these, files appear owned by root because ntfs-3g runs via sudo. The `local` flag was removed in 0.4.2 because it routed deletes through `.Trashes/<uid>/`, which triggered an `auto_xattr` write into NTFS Alternate Data Streams that locked the FUSE channel indefinitely. Trade-off: deletes do not go to Trash.
+- **Mount sequence:** `diskutil unmount force <partition>` → `diskutil unmountDisk force <parent>` → `ntfs-3g` open. The parent unmount is required to release Disk Arbitration's hold on the block device; otherwise ntfs-3g gets `Operation not permitted`.
+- **Eject sequence:** `umount` (waits for FUSE teardown) → `diskutil unmountDisk force <parent>` (clears DA auto-remount) → `diskutil eject <parent>` (SCSI STOP UNIT)
+- **Auto-mount:** per-user LaunchAgent at `~/Library/LaunchAgents/com.ntfshandler.automount.plist`, runs in the user's session (not as root). LaunchDaemons can't open `/dev/disk*` on modern macOS without manual Full Disk Access grants; LaunchAgents inherit the user's TCC and sidestep this. Polls every `$NTFS_DAEMON_POLL_INTERVAL` seconds (default: 10, minimum: 2); retries up to `$NTFS_DAEMON_MAX_RETRIES` times (default: 3) per disk before giving up; per-disk counters reset on unplug. Log rotates when it exceeds 10 MB.
+- **Sudoers whitelist:** `/usr/local/bin/ntfs-3g, /opt/homebrew/bin/ntfs-3g, /usr/sbin/diskutil, /sbin/umount, /bin/mkdir, /bin/rmdir /Volumes/*`. The agent has no tty, so every command it runs via sudo must be in this list. `rmdir` is scoped to `/Volumes/` to limit blast radius. Version tracked in `~/.ntfs-handler-sudoers-version`.
+- **Mount records:** `~/.ntfs-mounts` (user), `~/.ntfs-mounts-daemon` (agent) — tab-separated, atomic `mktemp` + `mv`
+- **Agent state:** `~/Library/Caches/ntfs-daemon-{seen,failures}`; logs at `~/Library/Logs/ntfs-daemon.log`
 - **Shell:** bash 3.2+; ShellCheck clean
-- **Tested:** macOS Ventura 13, Sonoma 14 — Intel and Apple Silicon
+- **Tested:** macOS Ventura 13, Sonoma 14, Sequoia 15 — Intel and Apple Silicon

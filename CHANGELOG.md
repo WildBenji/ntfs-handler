@@ -1,5 +1,65 @@
 # Changelog
 
+## [0.5.0] - 2026-05-06
+
+Major release. Auto-mount re-architected from a system-wide LaunchDaemon to a per-user LaunchAgent so it can actually access raw block devices on modern macOS. Adds bounded retries, fixes Finder deletes, tightens sudoers. **Existing 0.4.x installs must migrate** — see below.
+
+### Breaking changes
+
+- **Auto-mount migrated from LaunchDaemon to LaunchAgent.** Origin's 0.3.5–0.4.2 line documented Full Disk Access as a manual user step ("grant FDA to ntfs-3g in System Settings"), but that grant breaks every time Homebrew replaces the binary. The new LaunchAgent at `~/Library/LaunchAgents/com.ntfshandler.automount.plist` runs in the user's login session and inherits Finder/Terminal's TCC — no manual FDA grant, no breakage on `brew upgrade`.
+- **`ntfs daemon install` no longer takes sudo.** The agent is per-user; the plist lives in your home directory.
+- **Auto-mount no longer runs without an active login.** Logging out stops the agent. Suitable for desk-bound Macs; headless servers should mount manually.
+
+### Added
+
+- **Bounded retries (default 3, configurable via `NTFS_DAEMON_MAX_RETRIES`).** A drive that ntfs-3g can't open (dirty volume that `recover` can't fix, hardware fault) is no longer retried every 10 seconds forever. After 3 attempts the agent logs `Giving up on $disk_id after 3 attempts. To retry: ntfs mount $disk_id` and stays silent until the disk is unplugged. Per-disk counters reset on unplug.
+- **Suppressed retry log spam.** First failure logs the full ntfs-3g diagnostic; retries 2 and 3 log a single terse line each.
+- **`uid`/`gid` mount options** derived from `$SUDO_UID`/`$SUDO_GID` (or `id -u`/`id -g`) so Finder can delete files. Complements 0.4.2's removal of `local`.
+- **`/bin/mkdir` added to the sudoers whitelist** and **`/bin/rmdir` scoped to `/Volumes/*`**. The agent has no controlling tty, so every command it invokes via sudo must be NOPASSWD-whitelisted or it hangs forever. `mkdir` is required to create mount points under root-owned `/Volumes`. Scoping `rmdir` limits blast radius.
+- **Sudoers version marker** at `~/.ntfs-handler-sudoers-version`. The sudoers file itself is mode 440 (root-readable only); the marker lets `daemon install` detect a stale rule without sudo. `SUDOERS_VERSION=3` in this release.
+- **Disk Arbitration parent-disk unmount before opening the block device.** Without this, ntfs-3g intermittently returns `Operation not permitted` because DA still holds `/dev/diskN` open after a partition unmount. Now unconditionally runs `diskutil unmountDisk force <parent>` before the ntfs-3g call.
+- **Mount diagnostics surfaced.** Recovery-attempt stderr is captured and printed on failure (was suppressed; users got "Failed to mount" with no info).
+
+### Fixed
+
+- **`install.sh` `${DIM}` undefined.** The colour-vars line on line 8 never defined `DIM`, so the sudoers-prompt message crashed under `set -u`. Defined alongside the others.
+- **`/dev/$disk_id on` greps anchored.** Several `mount | grep` calls used unanchored substring matches; `disk2s1` could match `disk2s11`, breaking detection on systems with double-digit partition numbers.
+- **`NTFS_DAEMON_POLL_INTERVAL` validated.** Non-numeric or `0` values previously crashed `sleep` (with `KeepAlive=true`, that was an infinite respawn). Validated and clamped to ≥ 2.
+- **`record_mount` `mv` error handling** — was missing the `|| { rm -f "$tmp"; return 1; }` cleanup that `record_unmount` already had.
+- **`warn()` writes to stderr** in both `ntfs` and `install.sh` (was going to stdout, polluting `$(...)` capture).
+- **Daemon unnamed-volume fallback unified** to `"NTFS Volume"` (interactive used `"NTFS Volume"`, daemon used `"NTFS_$disk_id"`).
+- **`cmd_install` no longer aborts when invoked via PATH.** `sudo cp /usr/local/bin/ntfs /usr/local/bin/ntfs` returns 1 and `set -e` killed the script before `install_sudoers` ran. Skipped when source equals destination.
+
+### Migration
+
+```sh
+# 1. Tear down the old LaunchDaemon (and its state)
+sudo cp <path-to-new-ntfs> /usr/local/bin/ntfs    # or re-run install.sh
+sudo ntfs daemon uninstall                         # handles legacy /Library/LaunchDaemons + /var/run + /var/log
+
+# 2. Refresh sudoers (adds /bin/mkdir, scopes /bin/rmdir, writes the v3 marker)
+sudo rm /etc/sudoers.d/ntfs-handler
+ntfs install
+
+# 3. Install the agent (no sudo)
+ntfs daemon install
+
+# Verify
+launchctl print "gui/$(id -u)/com.ntfshandler.automount" | grep -E "state|last exit code"
+```
+
+### Lessons learned (for future maintainers)
+
+- **LaunchDaemons can't open `/dev/disk*` on modern macOS without manual Full Disk Access grants** — and the grant breaks every time the underlying binary moves (Homebrew updates, version bumps). LaunchAgents inherit the user's session TCC and sidestep this entirely. Use an Agent for any tool that touches raw block devices.
+- **launchd-spawned processes inherit no `HOME`** unless the plist sets it. Combined with `set -u` and a top-level `$HOME` reference, that's a silent crash loop. Default it: `${HOME:-/var/root}`.
+- **bash 3.2 (the default `/bin/bash` on every macOS) treats empty `"${arr[@]}"` as unbound** under `set -u`. Guard with `[ ${#arr[@]} -gt 0 ]` or use the `${arr[@]+...}` idiom.
+- **Sudoers files are mode 440** by `visudo` mandate — non-root users can't read them. Track installed-version state in a user-readable marker file.
+- **LaunchAgents have no controlling tty.** Sudo password prompts hang forever (or fail silently with `KeepAlive`). Every binary the agent invokes via sudo must be in the NOPASSWD whitelist.
+- **Disk Arbitration may re-mount a partition read-only after `diskutil unmount` of just the partition.** Fix: `diskutil unmountDisk force <parent>` to fully release DA's hold on the device node.
+- **ntfs-3g via sudo mounts files as root by default**, breaking Finder deletes. Pass `uid`/`gid` from `$SUDO_UID`/`$SUDO_GID` (or `id -u`/`id -g`).
+
+---
+
 ## [0.4.2] - 2026-03-26
 
 ### Fixed

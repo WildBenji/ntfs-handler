@@ -5,10 +5,10 @@
 
 set -euo pipefail
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; BOLD='\033[1m'; NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 info() { printf "${BLUE}=>${NC} %s\n" "$*"; }
 ok()   { printf "${GREEN}✓${NC}  %s\n" "$*"; }
-warn() { printf "${YELLOW}▲${NC}  %s\n" "$*"; }
+warn() { printf "${YELLOW}▲${NC}  %s\n" "$*" >&2; }
 err()  { printf "${RED}✗${NC}  %s\n" "$*" >&2; }
 die()  { err "$*"; exit 1; }
 

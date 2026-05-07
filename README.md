@@ -97,7 +97,7 @@ ntfs daemon install
 
 After that, plugging in an NTFS drive will mount it automatically within about 10 seconds. No commands needed. Auto-mount runs while you're logged in; logging out stops it.
 
-> Earlier versions used a system-wide LaunchDaemon that required users to grant Full Disk Access to `ntfs-3g` in System Settings. The 0.5.0 LaunchAgent runs in your login session and inherits Finder/Terminal's TCC — no manual grant needed.
+> Earlier versions used a system-wide LaunchDaemon that required users to grant Full Disk Access to `ntfs-3g` in System Settings. The 1.0.0 LaunchAgent runs in your login session and inherits Finder/Terminal's TCC — no manual grant needed.
 
 To turn it off:
 

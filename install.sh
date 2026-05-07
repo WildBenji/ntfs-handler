@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; BOLD='\033[1m'; NC='\033[0m'
 info() { printf "${BLUE}=>${NC} %s\n" "$*"; }
 ok()   { printf "${GREEN}✓${NC}  %s\n" "$*"; }
 warn() { printf "${YELLOW}▲${NC}  %s\n" "$*" >&2; }
@@ -102,60 +102,16 @@ fi
 # Verify
 ntfs version >/dev/null && ok "ntfs is working"
 
-# Optional: auto-mount daemon
+# Optional: passwordless sudo for mount/eject.
+# Delegate to /usr/local/bin/ntfs so the rule and version marker stay in sync
+# with the script that actually uses them. The agent install below requires it.
+ntfs __install-sudoers || true
+
+# Optional: auto-mount agent
 echo
 read -rp "Enable auto-mount? NTFS drives will mount automatically when plugged in. [y/N] " yn
 if [[ "${yn:-}" =~ ^[Yy]$ ]]; then
-    sudo ntfs daemon install
-fi
-
-# Optional: passwordless sudo for mount/eject
-echo
-printf "  ${BOLD}Password-free mounting (optional)${NC}\n"
-echo
-printf "  Right now, every time you mount or eject a drive, macOS asks for your\n"
-printf "  password. This is because mounting requires root access.\n"
-echo
-printf "  Saying yes adds a rule to /etc/sudoers.d/ntfs-handler that lets your\n"
-printf "  account run the specific commands ntfs uses (ntfs-3g, diskutil, umount)\n"
-printf "  without typing a password. Only those exact programs are affected —\n"
-printf "  everything else still requires your password as usual.\n"
-echo
-printf "  ${YELLOW}▲${NC}  Security note: any admin user on this Mac will be able to mount and\n"
-printf "  eject drives without a password. If you are the only user, or you trust\n"
-printf "  everyone with an admin account on this machine, this is fine. If you share\n"
-printf "  your Mac with other people who have admin accounts, say no.\n"
-echo
-printf "  Saying no changes nothing — you will keep being asked for your password\n"
-printf "  when mounting or ejecting, which is the default macOS behavior.\n"
-echo
-printf "  ${DIM}This is completely reversible: sudo rm /etc/sudoers.d/ntfs-handler${NC}\n"
-echo
-read -rp "  Skip password prompts for ntfs? [y/N] " yn
-if [[ "${yn:-}" =~ ^[Yy]$ ]]; then
-    sudoers_file="/etc/sudoers.d/ntfs-handler"
-    tmp=$(mktemp)
-    cat > "$tmp" <<'SUDOERS'
-# ntfs-handler — allow staff group to run mount/eject commands without a password.
-# Installed by: install.sh
-# Remove with:  sudo rm /etc/sudoers.d/ntfs-handler
-%staff ALL=(root) NOPASSWD: /usr/local/bin/ntfs-3g, /opt/homebrew/bin/ntfs-3g, /usr/sbin/diskutil, /sbin/umount, /bin/rmdir /Volumes/*
-SUDOERS
-    if ! visudo -c -f "$tmp" &>/dev/null; then
-        rm -f "$tmp"
-        err "sudoers syntax check failed — skipping"
-    elif sudo cp "$tmp" "$sudoers_file" \
-        && sudo chown root:wheel "$sudoers_file" \
-        && sudo chmod 440 "$sudoers_file"; then
-        rm -f "$tmp"
-        ok "Passwordless mounting enabled (rule saved to $sudoers_file)"
-        info "To remove it later: sudo rm $sudoers_file"
-    else
-        rm -f "$tmp"
-        err "Failed to install sudoers rule"
-    fi
-else
-    info "Skipped — you will be prompted for your password when mounting/ejecting"
+    ntfs daemon install
 fi
 
 echo

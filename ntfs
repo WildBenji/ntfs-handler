@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-VERSION="0.5.0"
+VERSION="1.0.0"
 MOUNT_RECORD="${HOME:-/var/root}/.ntfs-mounts"
 DAEMON_MOUNT_RECORD="${HOME:-/var/root}/.ntfs-mounts-daemon"
 DAEMON_PLIST="${HOME:-/var/root}/Library/LaunchAgents/com.ntfshandler.automount.plist"
@@ -237,12 +237,14 @@ do_mount() {
     if sudo "$ntfs3g" "$device" "$mount_point" -o "$opts" 2>/dev/null; then
         ok "Mounted ${BOLD}$vol_name${NC} at $mount_point"
         [ -n "$hidden" ] && printf "    ${DIM}Hidden from Finder — Go → Go to Folder (⌘⇧G) → %s${NC}\n" "$mount_point"
-        record_mount "$disk_id" "$mount_point" "$rec_file"
+        record_mount "$disk_id" "$mount_point" "$rec_file" \
+            || warn "Mount succeeded but tracking failed for $disk_id (status/unmount may not see it)"
         return 0
     elif recover_err=$(sudo "$ntfs3g" "$device" "$mount_point" -o "${opts},recover" 2>&1 >/dev/null); then
         warn "Mounted ${BOLD}$vol_name${NC} with recovery (volume was not safely ejected from Windows)"
         [ -n "$hidden" ] && printf "    ${DIM}Hidden from Finder — Go → Go to Folder (⌘⇧G) → %s${NC}\n" "$mount_point"
-        record_mount "$disk_id" "$mount_point" "$rec_file"
+        record_mount "$disk_id" "$mount_point" "$rec_file" \
+            || warn "Mount succeeded but tracking failed for $disk_id (status/unmount may not see it)"
         return 0
     else
         err "Failed to mount $vol_name ($disk_id)"
@@ -294,6 +296,16 @@ do_unmount() {
         return 0
     else
         err "Failed to unmount $mount_point"
+        # If an ntfs-3g process is wedged on this device, both umount and
+        # diskutil unmount force will block. Surface the PID so the user can
+        # kill it manually — kill isn't in the sudoers whitelist on purpose
+        # (avoids broadening passwordless root scope).
+        local stuck_pid
+        stuck_pid=$(pgrep -f "ntfs-3g.*$disk_id" 2>/dev/null | head -1 || true)
+        if [ -n "$stuck_pid" ]; then
+            printf "  ntfs-3g (PID %s) appears stuck. To force-release: ${BOLD}sudo kill -9 %s${NC}\n" \
+                "$stuck_pid" "$stuck_pid" >&2
+        fi
         return 1
     fi
 }
@@ -388,7 +400,9 @@ cmd_mount() {
             found=0
             for i in "${!NTFS_DISKS[@]}"; do
                 if [ "${NTFS_DISKS[$i]}" = "$target" ]; then
-                    do_mount "$target" "${NTFS_VOLNAMES[$i]}" "$hidden" "$readonly"
+                    # do_mount prints its own error; swallow rc so set -e doesn't
+                    # abort the loop (we still want to process the remaining targets).
+                    do_mount "$target" "${NTFS_VOLNAMES[$i]}" "$hidden" "$readonly" || true
                     found=1; break
                 fi
             done
@@ -515,6 +529,10 @@ cmd_unmount() {
                 idx=$((choice-1))
                 parent=$(echo "${NTFS_DISKS[$idx]}" | sed 's/s[0-9]*$//; s/p[0-9]*$//')
                 printf "${BLUE}=>${NC}  Ejecting ${BOLD}%s${NC}...\n" "${NTFS_VOLNAMES[$idx]}"
+                # If a FUSE/ntfs-3g mount exists on this partition (record was
+                # lost or never created), umount it first — diskutil unmountDisk
+                # force can't release a wedged FUSE mount on its own.
+                sudo umount "/dev/${NTFS_DISKS[$idx]}" &>/dev/null || true
                 sudo diskutil unmountDisk force "$parent" &>/dev/null || true
                 if sudo diskutil eject "$parent" &>/dev/null; then
                     ok "Ejected ${BOLD}${NTFS_VOLNAMES[$idx]}${NC} — safe to unplug"
@@ -537,7 +555,7 @@ cmd_unmount() {
             found=0
             for i in "${!REC_DISKS[@]}"; do
                 if [ "${REC_DISKS[$i]}" = "$target" ]; then
-                    do_unmount "$target" "${REC_MOUNTS[$i]}" "$eject"
+                    do_unmount "$target" "${REC_MOUNTS[$i]}" "$eject" || true
                     found=1; break
                 fi
             done
@@ -617,10 +635,27 @@ cmd_doctor() {
         printf "  ${GREEN}✓${NC}  SIP: %s\n" "$sip"
     fi
 
-    if sudo launchctl list 2>/dev/null | grep -q "ntfshandler"; then
-        printf "  ${GREEN}✓${NC}  Auto-mount daemon running\n"
+    # Paragon/Tuxera kexts clash with macFUSE and can panic the kernel; surface
+    # the conflict here since users only run doctor when something is wrong.
+    local conflicting=""
+    if kextstat 2>/dev/null | grep -qiE 'paragon|ufsd'; then
+        conflicting="${conflicting}Paragon "
+    fi
+    if kextstat 2>/dev/null | grep -qi tuxera; then
+        conflicting="${conflicting}Tuxera "
+    fi
+    if [ -n "$conflicting" ]; then
+        printf "  ${RED}✗${NC}  Conflicting NTFS driver(s) loaded: %s\n" "$conflicting"
+        printf "       These clash with macFUSE and can cause kernel panics. Uninstall before use.\n"
     else
-        printf "  ${DIM}–${NC}  Auto-mount daemon not installed\n"
+        printf "  ${GREEN}✓${NC}  No conflicting NTFS drivers\n"
+    fi
+
+    # The agent runs as a user LaunchAgent — root's launchctl can't see it.
+    if launchctl print "gui/$(id -u)/com.ntfshandler.automount" &>/dev/null; then
+        printf "  ${GREEN}✓${NC}  Auto-mount agent running\n"
+    else
+        printf "  ${DIM}–${NC}  Auto-mount agent not installed\n"
         printf "       Enable: ${BOLD}ntfs daemon install${NC}\n"
     fi
 
@@ -937,8 +972,16 @@ __daemon_gc_fails() {
 # ── cmd: install ──────────────────────────────────────────────────────────────
 install_sudoers() {
     local sudoers_file="/etc/sudoers.d/ntfs-handler"
+    local ver_file="${HOME:-/var/root}/.ntfs-handler-sudoers-version"
 
     if [ -f "$sudoers_file" ]; then
+        local installed_ver=""
+        [ -f "$ver_file" ] && installed_ver=$(cat "$ver_file" 2>/dev/null || true)
+        if [ "$installed_ver" != "$SUDOERS_VERSION" ]; then
+            warn "Sudoers rule is from an older version (need v${SUDOERS_VERSION}, have v${installed_ver:-?})"
+            printf "  Refresh it: ${BOLD}sudo rm /etc/sudoers.d/ntfs-handler && ntfs install${NC}\n" >&2
+            return 0
+        fi
         ok "Passwordless mounting already configured ($sudoers_file)"
         info "To remove it: sudo rm $sudoers_file"
         return 0
@@ -993,7 +1036,7 @@ EOF
     rm -f "$tmp"
     # User-readable marker so daemon install can verify the rule version
     # without needing sudo (the sudoers file itself is mode 440).
-    printf '%s\n' "$SUDOERS_VERSION" > "${HOME:-/var/root}/.ntfs-handler-sudoers-version"
+    printf '%s\n' "$SUDOERS_VERSION" > "$ver_file"
     ok "Passwordless mounting enabled (rule saved to $sudoers_file)"
     info "To remove it later: sudo rm $sudoers_file"
 }

@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.0.0] - 2026-05-07
+
+First stable release. The eject path is now battle-tested and the auto-mount agent has been hardened through real-world use.
+
+### Fixed
+- **`set -e` crash on direct-disk mount failure** — `do_mount` in `cmd_mount` direct-disk path now uses `|| true` so `set -e` doesn't abort the script before processing remaining targets or reporting the error.
+- **`set -e` crash on direct-disk unmount failure** — `do_unmount` in `cmd_unmount` direct-disk path now uses `|| true` for the same reason.
+- **Stuck ntfs-3g PID surfaced on unmount failure** — when both `umount` and `diskutil unmount force` fail (hung FUSE process), the script now prints the stuck ntfs-3g PID and the exact `sudo kill -9` command to force-release it. `kill` is deliberately excluded from the sudoers whitelist to avoid broadening passwordless root scope.
+- **Untracked-eject path unmounts FUSE mounts first** — when running `ntfs eject` without mount records, the script now attempts `sudo umount` on each partition before `diskutil unmountDisk force`, so a lost/corrupted mount record doesn't block ejection.
+- **`record_mount` failure handled gracefully** — mount succeeds even if tracking fails; user sees a warning instead of a silent crash.
+- **Doctor checks for conflicting Paragon/Tuxera kexts** — `ntfs doctor` now scans for loaded Paragon or Tuxera kernel extensions that clash with macFUSE and can cause kernel panics during sleep/wake.
+- **Doctor uses correct LaunchAgent query** — no longer uses `sudo launchctl list` (which can't see user-scoped agents); now queries `launchctl print gui/$(id -u)/...`.
+- **`install_sudoers` version check** — existing sudoers rules from older versions are now detected and the user is prompted to refresh them instead of silently accepting a stale whitelist.
+
+### Changed
+- **`install.sh` delegates sudoers to `ntfs __install-sudoers`** — removes the duplicate sudoers prompt and inline sudoers template from the installer; the rule and version marker always stay in sync with the script that uses them.
+- **`install.sh` auto-mount prompt no longer runs with sudo** — the agent is per-user (LaunchAgent since 0.5.0); `sudo ntfs daemon install` was always wrong post-migration.
+- **`install.sh` drops unused `DIM` variable** — was defined but only `ntfs` (not `install.sh`) used it.
+- **zsh completion updated** — daemon subcommands no longer claim to require sudo; mount flag corrected from `--visible` (default) to `--hidden`.
+
+---
+
 ## [0.5.0] - 2026-05-06
 
 Major release. Auto-mount re-architected from a system-wide LaunchDaemon to a per-user LaunchAgent so it can actually access raw block devices on modern macOS. Adds bounded retries, fixes Finder deletes, tightens sudoers. **Existing 0.4.x installs must migrate** — see below.

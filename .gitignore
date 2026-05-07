@@ -1,0 +1,40 @@
+# macOS Finder / Spotlight / Time Machine droppings
+.DS_Store
+.DS_Store?
+._*
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+.fseventsd
+.DocumentRevisions-V100
+.TemporaryItems
+.com.apple.timemachine.donotpresent
+.VolumeIcon.icns
+.apdisk
+Icon
+
+# Editor / IDE state (not project config)
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.*.swp
+.*.swo
+
+# Backups produced by editors / merge tools
+*.bak
+*.orig
+*.rej
+
+# Logs (the daemon writes to ~/Library/Logs, not the repo, but be defensive)
+*.log
+
+# Local secrets — must never be committed (see CLAUDE.md security boundaries)
+.env
+.env.*
+*.pem
+*.key
+secrets.*
+credentials.*

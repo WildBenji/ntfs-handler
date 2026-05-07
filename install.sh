@@ -15,7 +15,7 @@ die()  { err "$*"; exit 1; }
 [[ "$(uname)" == "Darwin" ]] || die "This installer is for macOS only."
 
 printf "\n${BOLD}ntfs-handler installer${NC}\n"
-printf "Free NTFS read/write for macOS — open source, not for resale.\n\n"
+printf "Free NTFS read/write for macOS — free for personal use, no commercial resale.\n\n"
 
 # macOS version check
 macos_major=$(sw_vers -productVersion | cut -d. -f1)
@@ -119,7 +119,7 @@ printf "${GREEN}${BOLD}All done!${NC}\n\n"
 printf "  ${BOLD}Quick start:${NC}\n"
 printf "  ntfs list                    # see connected NTFS drives\n"
 printf "  ntfs mount                   # mount interactively\n"
-printf "  ntfs mount --all --visible   # mount all, show in Finder\n"
+printf "  ntfs mount --all             # mount every detected drive\n"
 printf "  ntfs status                  # what's currently mounted\n"
 printf "  ntfs doctor                  # check system health\n"
 printf "  ntfs help                    # all commands\n\n"

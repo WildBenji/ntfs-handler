@@ -1,11 +1,15 @@
 #!/bin/bash
 # ntfs — Free NTFS read/write for macOS
 # https://github.com/WildBenji/ntfs-handler
-# Public domain — no restrictions on use.
+#
+# Copyright (c) 2026 Benji
+# Licensed under the PolyForm Noncommercial License 1.0.0.
+# Free for personal and noncommercial use; commercial use is not permitted.
+# See the LICENSE file in the repository root for the full terms.
 
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 MOUNT_RECORD="${HOME:-/var/root}/.ntfs-mounts"
 DAEMON_MOUNT_RECORD="${HOME:-/var/root}/.ntfs-mounts-daemon"
 DAEMON_PLIST="${HOME:-/var/root}/Library/LaunchAgents/com.ntfshandler.automount.plist"
@@ -13,7 +17,7 @@ DAEMON_LOG="${HOME:-/var/root}/Library/Logs/ntfs-daemon.log"
 DAEMON_OLD_PLIST="/Library/LaunchDaemons/com.ntfshandler.automount.plist"
 # Bumped whenever the sudoers whitelist changes — the daemon-install check
 # refuses to start if the user's sudoers file is from an older version.
-SUDOERS_VERSION="3"
+SUDOERS_VERSION="5"
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 if [ -t 1 ] && [ "${NO_COLOR:-}" = "" ]; then
@@ -740,15 +744,16 @@ PLIST
             ;;
 
         uninstall)
+            local removed=0
             # New user-scoped agent
             if [ -f "$DAEMON_PLIST" ]; then
                 launchctl bootout "gui/$(id -u)/com.ntfshandler.automount" 2>/dev/null \
                     || launchctl unload "$DAEMON_PLIST" 2>/dev/null || true
                 rm -f "$DAEMON_PLIST" \
                       "$DAEMON_MOUNT_RECORD" \
-                      "${HOME:-/var/root}/Library/Caches/ntfs-daemon-seen" \
-                      "${HOME:-/var/root}/Library/Caches/ntfs-daemon-failures"
+                      "${HOME:-/var/root}/Library/Caches/ntfs-daemon-seen"
                 ok "Auto-mount agent removed"
+                removed=1
             fi
 
             # Legacy system-wide LaunchDaemon (pre-LaunchAgent migration)
@@ -763,10 +768,10 @@ PLIST
                       /var/run/ntfs-daemon.pid \
                       /var/log/ntfs-daemon.log
                 ok "Legacy system daemon removed"
+                removed=1
             fi
 
-            [ -f "$DAEMON_PLIST" ] || [ -f "$DAEMON_OLD_PLIST" ] || \
-                info "No daemon installed"
+            [ "$removed" -eq 0 ] && info "No daemon installed"
             ;;
 
         status)
@@ -994,15 +999,15 @@ install_sudoers() {
     printf "  password. This is because mounting requires root access.\n"
     echo
     printf "  Saying ${BOLD}yes${NC} adds a rule to /etc/sudoers.d/ntfs-handler that lets your\n"
-    printf "  account run the specific commands ntfs uses (ntfs-3g, diskutil, umount)\n"
-    printf "  without typing a password. Only those exact programs are affected —\n"
-    printf "  everything else still requires your password as usual.\n"
+    printf "  account run only the specific commands ntfs needs (ntfs-3g, diskutil\n"
+    printf "  unmount/unmountDisk/eject, umount, mkdir/rmdir under /Volumes) without\n"
+    printf "  typing a password. Everything else — including ${BOLD}diskutil erase${NC} and\n"
+    printf "  ${BOLD}diskutil partition${NC} — still prompts for your password as usual.\n"
     echo
-    printf "  ${YELLOW}▲${NC}  ${BOLD}Security note:${NC} any admin user on this Mac will be able to run the\n"
-    printf "  whitelisted commands without a password. That includes ${BOLD}diskutil${NC} — so\n"
-    printf "  ${BOLD}erase${NC} and ${BOLD}partition${NC} operations also become passwordless. If you are the\n"
-    printf "  only user, or you trust every admin on this Mac, this is fine. If you share\n"
-    printf "  your Mac with other admin users, say no.\n"
+    printf "  ${YELLOW}▲${NC}  ${BOLD}Security note:${NC} any admin (staff) user on this Mac will be able to\n"
+    printf "  unmount and eject any disk without a password. That can be used to\n"
+    printf "  interrupt other users' work. If you share this Mac with admins you don't\n"
+    printf "  trust, say no.\n"
     echo
     printf "  Saying ${BOLD}no${NC} changes nothing — you will keep being asked for your password\n"
     printf "  when mounting or ejecting, which is the default macOS behavior.\n"
@@ -1021,7 +1026,7 @@ install_sudoers() {
 # ntfs-handler — allow staff group to run mount/eject commands without a password.
 # Installed by: ntfs install
 # Remove with:  sudo rm /etc/sudoers.d/ntfs-handler
-%staff ALL=(root) NOPASSWD: /usr/local/bin/ntfs-3g, /opt/homebrew/bin/ntfs-3g, /usr/sbin/diskutil, /sbin/umount, /bin/mkdir, /bin/rmdir /Volumes/*
+%staff ALL=(root) NOPASSWD: /usr/local/bin/ntfs-3g, /opt/homebrew/bin/ntfs-3g, /usr/sbin/diskutil unmount force *, /usr/sbin/diskutil unmountDisk force *, /usr/sbin/diskutil eject *, /sbin/umount, /bin/mkdir -p /Volumes/*, /bin/rmdir /Volumes/*
 EOF
 
     if ! visudo -c -f "$tmp" &>/dev/null; then

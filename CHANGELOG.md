@@ -1,5 +1,36 @@
 # Changelog
 
+## [1.0.1] - 2026-05-07
+
+Hardening release. Tightens the sudoers whitelist from "all of `diskutil`" down to the three subcommands the script actually uses, adds a real LICENSE file and security disclosure policy, and fixes documentation polarity that had been inverted since the visible-by-default change.
+
+### Security
+- **Sudoers `/usr/sbin/diskutil` is now subcommand-scoped** — was unrestricted, which made `diskutil eraseDisk`, `partitionDisk`, `apfs deleteContainer`, etc. passwordless for any staff user. Tightened to the three subcommand forms the script actually invokes: `diskutil unmount force *`, `diskutil unmountDisk force *`, `diskutil eject *`. Erase/partition/apfs now correctly prompt for a password. The interactive sudoers prompt has been updated to no longer warn about risks that no longer exist.
+- **Sudoers `/bin/mkdir` is now path-scoped** — the whitelist entry was unrestricted (`/bin/mkdir`), letting any staff user `sudo mkdir` anywhere on disk without a password. Tightened to `/bin/mkdir -p /Volumes/*`, matching the exact form the daemon needs and mirroring the existing `/bin/rmdir /Volumes/*` scope.
+- `SUDOERS_VERSION` bumped to `5`. Existing 1.0.0 installs must refresh: `sudo rm /etc/sudoers.d/ntfs-handler && ntfs install` (then `ntfs daemon install` if auto-mount is in use).
+- **`SECURITY.md` added** — formal disclosure policy: report vulnerabilities via GitHub private security advisories, supported-version matrix, in-scope/out-of-scope list, and explicit threat model documenting the four intentional residual risks.
+
+### Added
+- **`LICENSE` file** — project is now licensed under the **PolyForm Noncommercial License 1.0.0** (source-available, free for personal and noncommercial use, no commercial use or resale). Resolves the prior contradiction between the script header ("public domain"), `install.sh` ("not for resale"), and the README ("don't sell it") — none of which were a real, enforceable license.
+- **`.gitignore`** — covers macOS Finder/Spotlight/Time Machine droppings, editor state (VS Code, JetBrains, vim), and defensive secret patterns (`.env`, `*.pem`, `*.key`).
+- **`.shellcheckrc` is now tracked** (was untracked) — documents the intentional `SC2059` suppression so contributors and CI lint with the same config.
+
+### Fixed
+- **Daemon `uninstall` no longer prints "No daemon installed" after a successful removal** — the post-`rm` `[ -f "$DAEMON_PLIST" ]` check ran *after* the file was deleted, so it always reported "no daemon" even when one had just been removed. Now tracked with a `removed` flag.
+- **README sidebar polarity inverted** — README claimed drives were hidden by default and `--visible` made them appear; the actual default has been visible-in-Finder for a while, with `--hidden` as the opt-out. Reflected in README, command table, and troubleshooting.
+- **README upgrade-from-pre-1.0 step** — drops misleading "always sudo" framing.
+- **`install.sh` "All done" example** — referenced a no-op flag (`--all --visible`); now `--all`.
+
+### Removed
+- **Phantom `~/Library/Caches/ntfs-daemon-failures` cleanup** — the daemon-uninstall path tried to remove a cache file that the codebase never writes; failure tracking has been in-memory parallel arrays since 0.5.0.
+
+### Changed
+- **README License section rewritten** — explicit bullet list of what's permitted and forbidden, honest "this is source-available, not OSI open source" framing.
+- **`ntfs` script header rewritten** — copyright + license pointer to LICENSE file.
+- **`install.sh` tagline** updated from "open source, not for resale" to "free for personal use, no commercial resale" so the messaging matches the license.
+
+---
+
 ## [1.0.0] - 2026-05-07
 
 First stable release. The eject path is now battle-tested and the auto-mount agent has been hardened through real-world use.

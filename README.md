@@ -13,7 +13,7 @@ macOS can read NTFS drives but refuses to write to them out of the box. This fix
 - About 5 minutes
 - **No Paragon NTFS or Tuxera NTFS installed.** These commercial NTFS drivers use kernel extensions that clash with macFUSE. Having both loaded at the same time can cause kernel panics (crashes during sleep/wake). Uninstall them before using ntfs-handler.
 
-That's it. No account, no license, no payment.
+That's it. No account, no signup, no payment — ever.
 
 ---
 
@@ -35,7 +35,7 @@ If you cloned the repo instead, run the installer from the repo directory:
 bash install.sh
 ```
 
-> **Note:** All the commands below (like `ntfs list`, `sudo ntfs daemon install`) assume you've run the installer first. If you're running directly from the cloned repo without installing, use `./ntfs` instead of `ntfs`.
+> **Note:** All the commands below (like `ntfs list`, `ntfs daemon install`) assume you've run the installer first. If you're running directly from the cloned repo without installing, use `./ntfs` instead of `ntfs`.
 
 ---
 
@@ -57,15 +57,15 @@ This shows all the NTFS drives plugged in and whether they're writable.
 ntfs mount
 ```
 
-Pick a drive from the menu. That's it — you can now read and write files on it.
+Pick a drive from the menu. That's it — you can now read and write files on it. The drive shows up in the Finder sidebar by default.
 
-The drive won't show up in the Finder sidebar by default (this avoids a macOS quirk). To open it, press **⌘⇧G** in Finder and type `/Volumes/YourDriveName`.
-
-If you want it in the Finder sidebar:
+If you'd rather keep it out of the sidebar (e.g., a backup drive you don't want to browse accidentally):
 
 ```sh
-ntfs mount --visible
+ntfs mount --hidden
 ```
+
+You can still open a hidden drive in Finder via **⌘⇧G** → `/Volumes/YourDriveName`.
 
 ### Safely unplug a drive
 
@@ -97,7 +97,7 @@ ntfs daemon install
 
 After that, plugging in an NTFS drive will mount it automatically within about 10 seconds. No commands needed. Auto-mount runs while you're logged in; logging out stops it.
 
-> Earlier versions used a system-wide LaunchDaemon that required users to grant Full Disk Access to `ntfs-3g` in System Settings. The 1.0.0 LaunchAgent runs in your login session and inherits Finder/Terminal's TCC — no manual grant needed.
+> Earlier versions (≤ 0.4.x) used a system-wide LaunchDaemon that required users to grant Full Disk Access to `ntfs-3g` in System Settings. The current LaunchAgent runs in your login session and inherits Finder/Terminal's TCC — no manual grant needed.
 
 To turn it off:
 
@@ -116,7 +116,7 @@ If a drive can't be mounted (for example, it was unsafely ejected from Windows i
 | `ntfs list` | Show connected NTFS drives |
 | `ntfs mount` | Mount a drive (interactive menu) |
 | `ntfs mount --all` | Mount all connected NTFS drives |
-| `ntfs mount --visible` | Mount and show in Finder sidebar |
+| `ntfs mount --hidden` | Mount but hide from the Finder sidebar |
 | `ntfs unmount` | Unmount a drive |
 | `ntfs eject` | Unmount and safely spin down the disk |
 | `ntfs status` | Show what's currently mounted |
@@ -144,7 +144,7 @@ This was fixed in 0.4.0 by mapping mounted files to your user via `uid`/`gid` mo
 Use `ntfs eject` next time instead of `ntfs unmount`. Eject sends the proper spin-down signal to the disk.
 
 **Shows as mounted but I can't see it**
-Open Finder, press **⌘⇧G**, and type `/Volumes/` — your drive should be listed there. Or run `ntfs mount --visible` to remount it with Finder sidebar visibility.
+You probably mounted with `--hidden`. Open Finder, press **⌘⇧G**, and type `/Volumes/` — your drive will be listed there. Or `ntfs unmount` it and remount without `--hidden`.
 
 **Stale "mounted" entry for a drive I already unplugged**
 Run `ntfs status` — it cleans those up automatically.
@@ -182,7 +182,16 @@ rm -f ~/.ntfs-mounts ~/.ntfs-mounts-daemon ~/.ntfs-handler-sudoers-version
 
 ## License
 
-Free and open source, forever. Use it, copy it, modify it, share it — but don't sell it. This project exists so nobody has to pay for basic NTFS support on macOS.
+Licensed under the **[PolyForm Noncommercial License 1.0.0](LICENSE)**.
+
+In plain English:
+
+- **Free for personal use, hobby projects, and study.** Use it on as many of your own machines as you want, forever.
+- **Free for noncommercial organizations** — schools, charities, research groups, public-safety and government institutions.
+- **You can fork it, modify it, and redistribute it.** Just keep the license notice with it.
+- **You cannot sell it. You cannot bundle it into a paid product or service. You cannot use it commercially.**
+
+This is a **source-available, noncommercial-only** license — not "open source" in the strict OSI sense, because OSI licenses require commercial use to be permitted. That choice is deliberate. This project exists so nobody has to pay for basic NTFS support on macOS, and the license is what guarantees that — forever, for everyone.
 
 ---
 
@@ -193,7 +202,7 @@ Free and open source, forever. Use it, copy it, modify it, share it — but don'
 - **Mount sequence:** `diskutil unmount force <partition>` → `diskutil unmountDisk force <parent>` → `ntfs-3g` open. The parent unmount is required to release Disk Arbitration's hold on the block device; otherwise ntfs-3g gets `Operation not permitted`.
 - **Eject sequence:** `umount` (waits for FUSE teardown) → `diskutil unmountDisk force <parent>` (clears DA auto-remount) → `diskutil eject <parent>` (SCSI STOP UNIT)
 - **Auto-mount:** per-user LaunchAgent at `~/Library/LaunchAgents/com.ntfshandler.automount.plist`, runs in the user's session (not as root). LaunchDaemons can't open `/dev/disk*` on modern macOS without manual Full Disk Access grants; LaunchAgents inherit the user's TCC and sidestep this. Polls every `$NTFS_DAEMON_POLL_INTERVAL` seconds (default: 10, minimum: 2); retries up to `$NTFS_DAEMON_MAX_RETRIES` times (default: 3) per disk before giving up; per-disk counters reset on unplug. Log rotates when it exceeds 10 MB.
-- **Sudoers whitelist:** `/usr/local/bin/ntfs-3g, /opt/homebrew/bin/ntfs-3g, /usr/sbin/diskutil, /sbin/umount, /bin/mkdir, /bin/rmdir /Volumes/*`. The agent has no tty, so every command it runs via sudo must be in this list. `rmdir` is scoped to `/Volumes/` to limit blast radius. Version tracked in `~/.ntfs-handler-sudoers-version`.
+- **Sudoers whitelist:** `/usr/local/bin/ntfs-3g, /opt/homebrew/bin/ntfs-3g, /usr/sbin/diskutil unmount force *, /usr/sbin/diskutil unmountDisk force *, /usr/sbin/diskutil eject *, /sbin/umount, /bin/mkdir -p /Volumes/*, /bin/rmdir /Volumes/*`. The agent has no tty, so every command it runs via sudo must be in this list. `diskutil` is scoped to the three unmount/eject subcommands the script actually uses — `eraseDisk`, `partitionDisk`, `apfs`, etc. still prompt for a password. `mkdir`/`rmdir` are scoped to `/Volumes/` (note: sudoers' `*` glob does match `/`, so a determined staff user could traverse with `..` — defense in depth, not a hard boundary). The remaining residual risk is that any staff user can unmount/eject any disk without a password, which can interrupt other users' work but cannot exfiltrate or destroy data. Version tracked in `~/.ntfs-handler-sudoers-version`.
 - **Mount records:** `~/.ntfs-mounts` (user), `~/.ntfs-mounts-daemon` (agent) — tab-separated, atomic `mktemp` + `mv`
 - **Agent state:** `~/Library/Caches/ntfs-daemon-{seen,failures}`; logs at `~/Library/Logs/ntfs-daemon.log`
 - **Shell:** bash 3.2+; ShellCheck clean

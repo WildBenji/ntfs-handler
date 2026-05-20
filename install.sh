@@ -34,29 +34,42 @@ else
     ok "Homebrew at $(command -v brew)"
 fi
 
-# ntfs-3g
-if command -v ntfs-3g &>/dev/null; then
-    ok "ntfs-3g already installed"
-else
-    info "Installing ntfs-3g..."
-    brew install ntfs-3g
-    ok "ntfs-3g installed"
-fi
-
-# macFUSE (must be installed manually — kernel extension)
+# macFUSE (kernel extension — required by ntfs-3g-mac)
 if [ -d /Library/Filesystems/macfuse.fs ] || [ -d /Library/Filesystems/osxfuse.fs ]; then
     ok "macFUSE already installed"
 else
-    echo
-    warn "macFUSE must be installed manually (it's a kernel extension)."
-    echo
-    echo "  Steps:"
-    echo "  1. Download macFUSE: https://osxfuse.github.io/"
-    echo "  2. Open the .pkg and follow the installer"
-    echo "  3. Go to: System Settings → Privacy & Security → scroll down → Allow"
-    echo "  4. Reboot your Mac"
-    echo
-    read -rp "Press Enter once macFUSE is installed and you've rebooted, or Ctrl+C to cancel... "
+    info "Installing macFUSE via Homebrew..."
+    brew install --cask macfuse 2>/dev/null || true
+    if [ ! -d /Library/Filesystems/macfuse.fs ] && [ ! -d /Library/Filesystems/osxfuse.fs ]; then
+        echo
+        warn "macFUSE must be installed manually (it's a kernel extension)."
+        echo
+        echo "  Steps:"
+        echo "  1. Download macFUSE: https://osxfuse.github.io/"
+        echo "  2. Open the .pkg and follow the installer"
+        echo "  3. Go to: System Settings → Privacy & Security → scroll down → Allow"
+        echo "  4. Reboot your Mac"
+        echo
+        read -rp "Press Enter once macFUSE is installed and you've rebooted, or Ctrl+C to cancel... "
+    else
+        ok "macFUSE installed via Homebrew"
+        echo
+        warn "macFUSE is a kernel extension — you may need to:"
+        echo "   go to System Settings → Privacy & Security → Allow, then reboot."
+        echo
+        read -rp "Press Enter after rebooting, or Ctrl+C to cancel... "
+    fi
+fi
+
+# ntfs-3g (macOS build via gromgit/fuse tap — core formula is Linux-only)
+BREW_NTFS3G="gromgit/fuse/ntfs-3g-mac"
+if command -v ntfs-3g &>/dev/null; then
+    ok "ntfs-3g already installed"
+else
+    info "Installing ntfs-3g (macOS) via gromgit/fuse tap..."
+    brew tap gromgit/fuse 2>/dev/null || true
+    brew install "$BREW_NTFS3G"
+    ok "ntfs-3g installed"
 fi
 
 # Install the ntfs script

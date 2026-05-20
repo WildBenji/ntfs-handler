@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-VERSION="1.0.1"
+VERSION="1.0.2"
 MOUNT_RECORD="${HOME:-/var/root}/.ntfs-mounts"
 DAEMON_MOUNT_RECORD="${HOME:-/var/root}/.ntfs-mounts-daemon"
 DAEMON_PLIST="${HOME:-/var/root}/Library/LaunchAgents/com.ntfshandler.automount.plist"
@@ -39,7 +39,7 @@ check_deps() {
     local all_ok=1
     if ! command -v ntfs-3g &>/dev/null; then
         err "ntfs-3g not found"
-        printf "  Install: ${BOLD}brew install ntfs-3g${NC}\n" >&2
+        printf "  Install: ${BOLD}brew install gromgit/fuse/ntfs-3g-mac${NC}\n" >&2
         all_ok=0
     fi
     if ! { [ -d /Library/Filesystems/macfuse.fs ] || [ -d /Library/Filesystems/osxfuse.fs ]; }; then
@@ -621,7 +621,7 @@ cmd_doctor() {
         printf "  ${GREEN}✓${NC}  ntfs-3g at %s\n" "$(find_ntfs3g)"
     else
         printf "  ${RED}✗${NC}  ntfs-3g not found\n"
-        printf "       Install: ${BOLD}brew install ntfs-3g${NC}\n"
+        printf "       Install: ${BOLD}brew install gromgit/fuse/ntfs-3g-mac${NC}\n"
     fi
 
     if [ -d /Library/Filesystems/macfuse.fs ] || [ -d /Library/Filesystems/osxfuse.fs ]; then

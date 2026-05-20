@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.2] - 2026-05-20
+
+Fix release. Replaces the broken `brew install ntfs-3g` path in `install.sh` (which was Linux-only) with the macOS-compatible `gromgit/fuse/ntfs-3g-mac` formula, and corrects the dependency order so macFUSE is installed before ntfs-3g.
+
+### Fixed
+- **`install.sh` ntfs-3g install always failed on macOS** — Homebrew core's `ntfs-3g` formula has `depends_on :linux` since the macOS build requires the closed-source macFUSE kernel extension. Switched to `gromgit/fuse/ntfs-3g-mac`, the maintained macOS-compatible build that links against macFUSE.
+- **macFUSE/ntfs-3g install ordering** — macFUSE block was below ntfs-3g in the install flow, but ntfs-3g-mac requires macFUSE as a dependency. Moved macFUSE installation before the ntfs-3g step.
+- **`install.sh` macFUSE now tries automated install first** — `brew install --cask macfuse` is attempted before falling back to the manual .pkg instructions.
+- **`ntfs` script install hints** — `ntfs doctor` and `ntfs mount` error messages now point to `brew install gromgit/fuse/ntfs-3g-mac` instead of the broken `brew install ntfs-3g`.
+
 ## [1.0.1] - 2026-05-07
 
 Hardening release. Tightens the sudoers whitelist from "all of `diskutil`" down to the three subcommands the script actually uses, adds a real LICENSE file and security disclosure policy, and fixes documentation polarity that had been inverted since the visible-by-default change.

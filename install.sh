@@ -93,6 +93,13 @@ if [ ! -f "$NTFS_SCRIPT" ]; then
         rm -f /tmp/ntfs-download /tmp/ntfs-SHA256SUMS /tmp/ntfs-completion
         die "SHA256 mismatch — download may be corrupted or tampered. Aborting."
     fi
+
+    expected_comp=$(awk '$2 == "completions/_ntfs" || $2 == "*completions/_ntfs" { print $1 }' /tmp/ntfs-SHA256SUMS)
+    actual_comp=$(shasum -a 256 /tmp/ntfs-completion | awk '{print $1}')
+    if [ -z "$expected_comp" ] || [ "$expected_comp" != "$actual_comp" ]; then
+        rm -f /tmp/ntfs-download /tmp/ntfs-SHA256SUMS /tmp/ntfs-completion
+        die "Completion checksum mismatch — download may be corrupted or tampered. Aborting."
+    fi
     ok "Checksum verified"
     NTFS_SCRIPT="/tmp/ntfs-download"
     COMP_SRC="/tmp/ntfs-completion"

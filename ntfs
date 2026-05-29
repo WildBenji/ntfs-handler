@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-VERSION="1.0.2"
+VERSION="1.0.3"
 MOUNT_RECORD="${HOME:-/var/root}/.ntfs-mounts"
 DAEMON_MOUNT_RECORD="${HOME:-/var/root}/.ntfs-mounts-daemon"
 DAEMON_PLIST="${HOME:-/var/root}/Library/LaunchAgents/com.ntfshandler.automount.plist"
@@ -129,6 +129,7 @@ load_mount_record() {
             }
         done < "$f"
     done
+    return 0
 }
 
 record_mount() {
@@ -148,6 +149,7 @@ record_unmount() {
         mv "$tmp" "$f" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; continue; }
         [ -f "$f" ] && [ ! -s "$f" ] && rm -f "$f"
     done
+    return 0
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -457,6 +459,10 @@ cmd_mount() {
     fi
 
     local mounted=0 failed=0 choice idx
+    if [ ${#choices[@]} -eq 0 ]; then
+        warn "Nothing selected."
+        return 0
+    fi
     for choice in "${choices[@]}"; do
         if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#NTFS_DISKS[@]}" ]; then
             err "Invalid selection: $choice (valid: 1–${#NTFS_DISKS[@]})"
@@ -526,6 +532,10 @@ cmd_unmount() {
                 read -r -a choices <<< "$input"
             fi
             local choice idx parent
+            if [ ${#choices[@]} -eq 0 ]; then
+                warn "Nothing selected."
+                return 0
+            fi
             for choice in "${choices[@]}"; do
                 if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#NTFS_DISKS[@]}" ]; then
                     err "Invalid selection: $choice"; continue
@@ -587,6 +597,10 @@ cmd_unmount() {
     fi
 
     local unmounted=0 failed=0 choice idx
+    if [ ${#choices[@]} -eq 0 ]; then
+        warn "Nothing selected."
+        return 0
+    fi
     for choice in "${choices[@]}"; do
         if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#REC_DISKS[@]}" ]; then
             err "Invalid selection: $choice (valid: 1–${#REC_DISKS[@]})"
@@ -751,7 +765,8 @@ PLIST
                     || launchctl unload "$DAEMON_PLIST" 2>/dev/null || true
                 rm -f "$DAEMON_PLIST" \
                       "$DAEMON_MOUNT_RECORD" \
-                      "${HOME:-/var/root}/Library/Caches/ntfs-daemon-seen"
+                      "${HOME:-/var/root}/Library/Caches/ntfs-daemon-seen" \
+                      "$DAEMON_LOG" "$DAEMON_LOG".*
                 ok "Auto-mount agent removed"
                 removed=1
             fi
@@ -823,7 +838,11 @@ __daemon_run() {
         # Rotate log at 10 MB so a runaway error loop (or just long uptime)
         # can't fill the disk.
         if [ -f "$DAEMON_LOG" ] && [ "$(stat -f%z "$DAEMON_LOG" 2>/dev/null || echo 0)" -gt 10485760 ]; then
-            mv "$DAEMON_LOG" "${DAEMON_LOG}.$(date +%Y%m%d%H%M%S)"
+            # Copy-truncate rather than mv: launchd holds this file open for the
+            # agent's stdout/stderr, so renaming it leaves launchd writing to the
+            # moved inode and never recreates the live log. Truncating in place
+            # keeps launchd's (O_APPEND) fd writing to the now-small file.
+            cp "$DAEMON_LOG" "${DAEMON_LOG}.$(date +%Y%m%d%H%M%S)" 2>/dev/null && : > "$DAEMON_LOG"
             printf '[%s] Log rotated\n' "$(date '+%Y-%m-%d %H:%M:%S')"
         fi
 

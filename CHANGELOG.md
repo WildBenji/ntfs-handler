@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.3] - 2026-05-29
+
+Hardening release. Fixes log rotation corruption under launchd, cleans up rotated logs during daemon uninstall, guards against empty selection input, and validates the completion file checksum during install.
+
+### Fixed
+- **Log rotation under launchd corrupts the daemon log** — the previous `mv` rename moved the inode out from under launchd's open file descriptor (attached to stdout/stderr), leaving a rotated copy but no live log file. Replaced with `cp` + in-place truncate, which keeps launchd's `O_APPEND` fd writing to the correct file.
+- **Daemon uninstall leaves log files behind** — `$DAEMON_LOG` and rotated `$DAEMON_LOG.*` files are now deleted during daemon uninstall alongside the plist and record files.
+- **`install.sh` missing completion checksum** — the completion file (`completions/_ntfs`) was installed without SHA256 verification, unlike the main script and installer. Added a checksum validation step matching the existing pattern.
+- **Empty selection causes silent failure** — `cmd_mount` and `cmd_unmount` now detect when the user enters nothing (presses Enter without a number or provides zero selections) and display a "Nothing selected" warning instead of proceeding with an empty list.
+
 ## [1.0.2] - 2026-05-20
 
 Fix release. Replaces the broken `brew install ntfs-3g` path in `install.sh` (which was Linux-only) with the macOS-compatible `gromgit/fuse/ntfs-3g-mac` formula, and corrects the dependency order so macFUSE is installed before ntfs-3g.

@@ -47,7 +47,7 @@ These are intentional choices, disclosed to users at install time. They are **no
 
 4. **Auto-mount agent runs as the logged-in user, not root.** Deliberate — LaunchDaemons can't open `/dev/disk*` on modern macOS without manual Full Disk Access grants that break on every Homebrew upgrade.
 
-5. **`curl … | bash` install pattern.** Standard for shell tools; mitigated by `SHA256SUMS` verification of the downloaded `ntfs` script in `install.sh`. Users who want stronger guarantees should clone the repo and run `bash install.sh` from a verified checkout. Both `install.sh` and `SHA256SUMS` are served from the same origin, so this protects against transit corruption rather than origin compromise.
+5. **`bash <(curl …)` install pattern.** Standard for shell tools; mitigated by `SHA256SUMS` verification of the downloaded `ntfs` script in `install.sh`. The process-substitution form is used rather than `curl … | bash` so the installer's interactive prompts read from your terminal instead of consuming the piped script. Downloads land in a private `mktemp -d` directory (mode 700) and are removed on exit, so another local user cannot swap them between verification and install. Users who want stronger guarantees should clone the repo and run `bash install.sh` from a verified checkout. Both `install.sh` and `SHA256SUMS` are served from the same origin, so this protects against transit corruption rather than origin compromise.
 
 ## Threat model
 

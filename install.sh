@@ -1,7 +1,7 @@
 #!/bin/bash
 # ntfs-handler installer
 # Usage: bash install.sh
-# Or one-liner: curl -fsSL https://raw.githubusercontent.com/WildBenji/ntfs-handler/main/install.sh | bash
+# Or one-liner: bash <(curl -fsSL https://raw.githubusercontent.com/WildBenji/ntfs-handler/main/install.sh)
 
 set -euo pipefail
 
@@ -50,14 +50,14 @@ else
         echo "  3. Go to: System Settings → Privacy & Security → scroll down → Allow"
         echo "  4. Reboot your Mac"
         echo
-        read -rp "Press Enter once macFUSE is installed and you've rebooted, or Ctrl+C to cancel... "
+        read -rp "Press Enter once macFUSE is installed and you've rebooted, or Ctrl+C to cancel... " || true
     else
         ok "macFUSE installed via Homebrew"
         echo
         warn "macFUSE is a kernel extension — you may need to:"
         echo "   go to System Settings → Privacy & Security → Allow, then reboot."
         echo
-        read -rp "Press Enter after rebooting, or Ctrl+C to cancel... "
+        read -rp "Press Enter after rebooting, or Ctrl+C to cancel... " || true
     fi
 fi
 
@@ -80,29 +80,31 @@ NTFS_SCRIPT="$SCRIPT_DIR/ntfs"
 COMP_SRC="$SCRIPT_DIR/completions/_ntfs"
 
 if [ ! -f "$NTFS_SCRIPT" ]; then
-    # Running via curl pipe — download and verify before installing
+    # Running from the curl one-liner (no local checkout) — download and verify before installing.
+    # Use a private mktemp dir (mode 700) so another local user can't pre-plant
+    # or swap the downloaded files between verification and the sudo install.
     info "Downloading ntfs script..."
-    curl -fsSL "$REPO/ntfs"                  -o /tmp/ntfs-download
-    curl -fsSL "$REPO/SHA256SUMS"            -o /tmp/ntfs-SHA256SUMS
-    curl -fsSL "$REPO/completions/_ntfs"     -o /tmp/ntfs-completion
+    DL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/ntfs-install.XXXXXX") || die "Could not create temp dir"
+    trap 'rm -rf "$DL_DIR"' EXIT
+    curl -fsSL "$REPO/ntfs"                  -o "$DL_DIR/ntfs"
+    curl -fsSL "$REPO/SHA256SUMS"            -o "$DL_DIR/SHA256SUMS"
+    curl -fsSL "$REPO/completions/_ntfs"     -o "$DL_DIR/_ntfs"
 
-    expected=$(awk '$2 == "ntfs" || $2 == "*ntfs" { print $1 }' /tmp/ntfs-SHA256SUMS)
-    actual=$(shasum -a 256 /tmp/ntfs-download | awk '{print $1}')
+    expected=$(awk '$2 == "ntfs" || $2 == "*ntfs" { print $1 }' "$DL_DIR/SHA256SUMS")
+    actual=$(shasum -a 256 "$DL_DIR/ntfs" | awk '{print $1}')
 
     if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
-        rm -f /tmp/ntfs-download /tmp/ntfs-SHA256SUMS /tmp/ntfs-completion
         die "SHA256 mismatch — download may be corrupted or tampered. Aborting."
     fi
 
-    expected_comp=$(awk '$2 == "completions/_ntfs" || $2 == "*completions/_ntfs" { print $1 }' /tmp/ntfs-SHA256SUMS)
-    actual_comp=$(shasum -a 256 /tmp/ntfs-completion | awk '{print $1}')
+    expected_comp=$(awk '$2 == "completions/_ntfs" || $2 == "*completions/_ntfs" { print $1 }' "$DL_DIR/SHA256SUMS")
+    actual_comp=$(shasum -a 256 "$DL_DIR/_ntfs" | awk '{print $1}')
     if [ -z "$expected_comp" ] || [ "$expected_comp" != "$actual_comp" ]; then
-        rm -f /tmp/ntfs-download /tmp/ntfs-SHA256SUMS /tmp/ntfs-completion
         die "Completion checksum mismatch — download may be corrupted or tampered. Aborting."
     fi
     ok "Checksum verified"
-    NTFS_SCRIPT="/tmp/ntfs-download"
-    COMP_SRC="/tmp/ntfs-completion"
+    NTFS_SCRIPT="$DL_DIR/ntfs"
+    COMP_SRC="$DL_DIR/_ntfs"
 fi
 
 info "Installing ntfs to /usr/local/bin/ntfs..."
@@ -129,7 +131,7 @@ ntfs __install-sudoers || true
 
 # Optional: auto-mount agent
 echo
-read -rp "Enable auto-mount? NTFS drives will mount automatically when plugged in. [y/N] " yn
+read -rp "Enable auto-mount? NTFS drives will mount automatically when plugged in. [y/N] " yn || yn=""
 if [[ "${yn:-}" =~ ^[Yy]$ ]]; then
     ntfs daemon install
 fi

@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.0.4] - 2026-06-13
+
+Hardening release. Fixes a stale `SHA256SUMS` that broke every curl-based install, closes a temp-file race in the installer, makes `ntfs eject <disk>` honor an explicit untracked target, guards interactive prompts against EOF abort, and adds CI so checksum drift can't ship again.
+
+### Security
+- **`install.sh` downloads now use a private `mktemp -d` (mode 700) + cleanup trap** instead of predictable `/tmp/ntfs-*` paths. The fixed names left a TOCTOU/symlink window between checksum verification and the `sudo cp` to `/usr/local/bin/ntfs` (a binary later run as root via the sudoers rule) that another local user could exploit on a shared Mac. The download directory is now private and removed on exit.
+- **`find_ntfs3g` no longer searches `/usr/bin/ntfs-3g`** — a path the sudoers whitelist never granted, so the tty-less auto-mount agent would have failed there. The binary-search list now matches the passwordless whitelist.
+
+### Fixed
+- **Stale `SHA256SUMS` broke every curl-based install** — the recorded `ntfs` hash did not match the shipped script, so `install.sh` aborted with a false "corrupted or tampered" error. Regenerated, and the new CI workflow now verifies it on every push.
+- **`ntfs eject <disk>` ignored an explicit untracked target** — when the named disk was not in the mount record (or a different disk was), eject either errored or fell into an interactive menu instead of ejecting the disk you named. The direct-disk path now runs before the menu and ejects a real, untracked disk directly via the new `eject_disk_direct` helper.
+- **Interactive prompts aborted the script on Ctrl-D/EOF** under `set -euo pipefail`. Every interactive `read` in `ntfs` (the mount/unmount/eject menus and the sudoers prompt) and `install.sh` is now guarded so EOF declines gracefully instead of killing the command mid-run.
+
+### Added
+- **CI workflow** (`.github/workflows/ci.yml`) — runs ShellCheck on `ntfs` and `install.sh` and verifies `SHA256SUMS` on every push and pull request, so a checksum mismatch or lint regression cannot ship.
+
+### Changed
+- **Install command switched to `bash <(curl …)`** (process substitution) from `curl … | bash` in `install.sh` and `SECURITY.md`, matching the README. The pipe form makes the installer's interactive prompts read from the piped script instead of the terminal.
+- **Concurrent mount-record updates are serialized** with an atomic `mkdir` mutex (`record_lock`/`record_unlock`). Without it, the auto-mount agent recording a new mount while a user command pruned a stale entry could lose one update; reads stay lock-free since the atomic `mv` always exposes a complete file.
+- **`ntfs doctor`** resolves the `ntfs-3g` path once instead of invoking the search twice.
+- **`ntfs unmount <disk>` / `ntfs eject <bogus-disk>` messaging** — against an untracked disk with an empty record these now report `Not in mount record: <disk>` rather than a generic "nothing to unmount/eject" line.
+
 ## [1.0.3] - 2026-05-29
 
 Hardening release. Fixes log rotation corruption under launchd, cleans up rotated logs during daemon uninstall, guards against empty selection input, and validates the completion file checksum during install.

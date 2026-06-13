@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      # Lint the bash scripts. The repo's .shellcheckrc (SC2059 suppression for
+      # the intentional color-in-format-string pattern) is picked up automatically.
+      - name: ShellCheck
+        run: shellcheck ntfs install.sh
+
+      # Fail the build if SHA256SUMS drifts from the tracked files — this is what
+      # the curl installer verifies against, so a stale checksum breaks installs.
+      - name: Verify SHA256SUMS
+        run: shasum -a 256 -c SHA256SUMS

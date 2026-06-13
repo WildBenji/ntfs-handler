@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-VERSION="1.0.3"
+VERSION="1.0.4"
 MOUNT_RECORD="${HOME:-/var/root}/.ntfs-mounts"
 DAEMON_MOUNT_RECORD="${HOME:-/var/root}/.ntfs-mounts-daemon"
 DAEMON_PLIST="${HOME:-/var/root}/Library/LaunchAgents/com.ntfshandler.automount.plist"
@@ -56,8 +56,7 @@ find_ntfs3g() {
     for c in \
         "$(command -v ntfs-3g 2>/dev/null || true)" \
         /opt/homebrew/bin/ntfs-3g \
-        /usr/local/bin/ntfs-3g \
-        /usr/bin/ntfs-3g; do
+        /usr/local/bin/ntfs-3g; do
         [ -x "$c" ] && echo "$c" && return 0
     done
     return 1
@@ -132,22 +131,50 @@ load_mount_record() {
     return 0
 }
 
+# ── Record-file locking ─────────────────────────────────────────────────────────
+# The user commands and the auto-mount agent can both touch the daemon record
+# file at once (e.g. the agent records a new mount while `ntfs status` prunes a
+# stale entry). Serialize each read-modify-write with an atomic mkdir mutex so a
+# concurrent update can't clobber the other's change. mkdir is atomic on POSIX
+# filesystems; macOS ships no flock(1). Reads (load_mount_record) need no lock —
+# the atomic `mv` means a reader always sees a complete file.
+record_lock() {
+    local lock="$1.lock" waited=0
+    until mkdir "$lock" 2>/dev/null; do
+        waited=$((waited + 1))
+        # After ~2s assume the holder died mid-update and steal the lock.
+        [ "$waited" -ge 20 ] && rm -rf "$lock" 2>/dev/null || true
+        sleep 0.1
+    done
+}
+
+record_unlock() {
+    rmdir "$1.lock" 2>/dev/null || true
+}
+
 record_mount() {
     local disk_id="$1" mount_point="$2" record_file="${3:-$MOUNT_RECORD}"
     local tmp; tmp=$(mktemp)
+    record_lock "$record_file"
     [ -f "$record_file" ] && grep -v "^${disk_id}	" "$record_file" > "$tmp" 2>/dev/null || true
     printf '%s\t%s\n' "$disk_id" "$mount_point" >> "$tmp"
-    mv "$tmp" "$record_file" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 1; }
+    mv "$tmp" "$record_file" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; record_unlock "$record_file"; return 1; }
+    record_unlock "$record_file"
 }
 
 record_unmount() {
     local disk_id="$1" f tmp
     for f in "$MOUNT_RECORD" "$DAEMON_MOUNT_RECORD"; do
         [ -f "$f" ] || continue
+        record_lock "$f"
         tmp=$(mktemp)
         grep -v "^${disk_id}	" "$f" > "$tmp" 2>/dev/null || true
-        mv "$tmp" "$f" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; continue; }
-        [ -f "$f" ] && [ ! -s "$f" ] && rm -f "$f"
+        if mv "$tmp" "$f" 2>/dev/null; then
+            [ -f "$f" ] && [ ! -s "$f" ] && rm -f "$f"
+        else
+            rm -f "$tmp" 2>/dev/null || true
+        fi
+        record_unlock "$f"
     done
     return 0
 }
@@ -316,6 +343,28 @@ do_unmount() {
     fi
 }
 
+# ── eject_disk_direct ──────────────────────────────────────────────────────────
+# Eject a disk we have no (longer a) mount record for: release any lingering
+# FUSE/macOS mount on the partition, then spin the parent disk down. Used by the
+# untracked-eject menu and by "ntfs eject <disk>" when the disk isn't tracked.
+eject_disk_direct() {
+    local disk_id="$1" label="${2:-$1}" parent
+    parent=$(echo "$disk_id" | sed 's/s[0-9]*$//; s/p[0-9]*$//')
+    printf "${BLUE}=>${NC}  Ejecting ${BOLD}%s${NC}...\n" "$label"
+    # umount the partition first — diskutil unmountDisk force can't release a
+    # wedged FUSE mount on its own.
+    sudo umount "/dev/$disk_id" &>/dev/null || true
+    sudo diskutil unmountDisk force "$parent" &>/dev/null || true
+    if sudo diskutil eject "$parent" &>/dev/null; then
+        ok "Ejected ${BOLD}${label}${NC} — safe to unplug"
+    elif ! diskutil info "$parent" &>/dev/null; then
+        # Disk disappeared — macOS already ejected it
+        ok "Ejected ${BOLD}${label}${NC} — safe to unplug"
+    else
+        warn "Could not eject ${label} — unplug manually when the activity light stops"
+    fi
+}
+
 # ── cmd: list ─────────────────────────────────────────────────────────────────
 cmd_list() {
     find_ntfs_volumes
@@ -451,7 +500,7 @@ cmd_mount() {
     printf "  Select volumes to mount (space-separated, 'a' for all): "
 
     local input choices=()
-    read -r input
+    read -r input || { warn "Nothing selected."; return 0; }
     if [ "$input" = "a" ] || [ "$input" = "all" ]; then
         for i in "${!NTFS_DISKS[@]}"; do choices+=($((i+1))); done
     else
@@ -508,6 +557,31 @@ cmd_unmount() {
         load_mount_record
     fi
 
+    # Direct disk IDs — handled before the empty-record menu so an explicit
+    # target is honored even when it isn't (or is no longer) tracked.
+    if [ ${#direct_disks[@]} -gt 0 ]; then
+        local target found i
+        for target in "${direct_disks[@]}"; do
+            found=0
+            for i in "${!REC_DISKS[@]}"; do
+                if [ "${REC_DISKS[$i]}" = "$target" ]; then
+                    do_unmount "$target" "${REC_MOUNTS[$i]}" "$eject" || true
+                    found=1; break
+                fi
+            done
+            if [ "$found" -eq 0 ]; then
+                if [ -n "$eject" ] && diskutil info "$target" &>/dev/null; then
+                    # Not tracked by us, but the user explicitly asked to eject a
+                    # real disk — release any lingering mount and spin it down.
+                    eject_disk_direct "$target"
+                else
+                    err "Not in mount record: $target"
+                fi
+            fi
+        done
+        return 0
+    fi
+
     if [ ${#REC_DISKS[@]} -eq 0 ]; then
         if [ -n "$eject" ]; then
             # Nothing tracked — but the disk may be spinning with a macOS read-only
@@ -525,13 +599,13 @@ cmd_unmount() {
             echo
             printf "  Select drive to eject (or 'a' for all): "
             local input choices=()
-            read -r input
+            read -r input || { warn "Nothing selected."; return 0; }
             if [ "$input" = "a" ] || [ "$input" = "all" ]; then
                 for i in "${!NTFS_DISKS[@]}"; do choices+=($((i+1))); done
             else
                 read -r -a choices <<< "$input"
             fi
-            local choice idx parent
+            local choice idx
             if [ ${#choices[@]} -eq 0 ]; then
                 warn "Nothing selected."
                 return 0
@@ -541,40 +615,11 @@ cmd_unmount() {
                     err "Invalid selection: $choice"; continue
                 fi
                 idx=$((choice-1))
-                parent=$(echo "${NTFS_DISKS[$idx]}" | sed 's/s[0-9]*$//; s/p[0-9]*$//')
-                printf "${BLUE}=>${NC}  Ejecting ${BOLD}%s${NC}...\n" "${NTFS_VOLNAMES[$idx]}"
-                # If a FUSE/ntfs-3g mount exists on this partition (record was
-                # lost or never created), umount it first — diskutil unmountDisk
-                # force can't release a wedged FUSE mount on its own.
-                sudo umount "/dev/${NTFS_DISKS[$idx]}" &>/dev/null || true
-                sudo diskutil unmountDisk force "$parent" &>/dev/null || true
-                if sudo diskutil eject "$parent" &>/dev/null; then
-                    ok "Ejected ${BOLD}${NTFS_VOLNAMES[$idx]}${NC} — safe to unplug"
-                elif ! diskutil info "$parent" &>/dev/null; then
-                    ok "Ejected ${BOLD}${NTFS_VOLNAMES[$idx]}${NC} — safe to unplug"
-                else
-                    warn "Could not eject ${NTFS_VOLNAMES[$idx]} — unplug manually when the activity light stops"
-                fi
+                eject_disk_direct "${NTFS_DISKS[$idx]}" "${NTFS_VOLNAMES[$idx]}"
             done
             return 0
         fi
         warn "No mounted NTFS volumes tracked. Nothing to unmount."
-        return 0
-    fi
-
-    # Direct disk IDs
-    if [ ${#direct_disks[@]} -gt 0 ]; then
-        local target found i
-        for target in "${direct_disks[@]}"; do
-            found=0
-            for i in "${!REC_DISKS[@]}"; do
-                if [ "${REC_DISKS[$i]}" = "$target" ]; then
-                    do_unmount "$target" "${REC_MOUNTS[$i]}" "$eject" || true
-                    found=1; break
-                fi
-            done
-            [ "$found" -eq 0 ] && err "Not in mount record: $target"
-        done
         return 0
     fi
 
@@ -589,7 +634,7 @@ cmd_unmount() {
     printf "  Select volumes to unmount (space-separated, 'a' for all): "
 
     local input choices=()
-    read -r input
+    read -r input || { warn "Nothing selected."; return 0; }
     if [ "$input" = "a" ] || [ "$input" = "all" ]; then
         for i in "${!REC_DISKS[@]}"; do choices+=($((i+1))); done
     else
@@ -631,8 +676,9 @@ cmd_doctor() {
         printf "  ${YELLOW}▲${NC}  Bash %s — brew install bash recommended\n" "$BASH_VERSION"
     fi
 
-    if find_ntfs3g &>/dev/null; then
-        printf "  ${GREEN}✓${NC}  ntfs-3g at %s\n" "$(find_ntfs3g)"
+    local ntfs3g_path
+    if ntfs3g_path=$(find_ntfs3g); then
+        printf "  ${GREEN}✓${NC}  ntfs-3g at %s\n" "$ntfs3g_path"
     else
         printf "  ${RED}✗${NC}  ntfs-3g not found\n"
         printf "       Install: ${BOLD}brew install gromgit/fuse/ntfs-3g-mac${NC}\n"
@@ -1033,7 +1079,7 @@ install_sudoers() {
     echo
     printf "  ${DIM}This is completely reversible: sudo rm /etc/sudoers.d/ntfs-handler${NC}\n"
     echo
-    read -rp "  Skip password prompts for ntfs? [y/N] " yn
+    read -rp "  Skip password prompts for ntfs? [y/N] " yn || yn=""
     if [[ ! "${yn:-}" =~ ^[Yy]$ ]]; then
         info "Skipped — you will be prompted for your password when mounting/ejecting"
         return 0

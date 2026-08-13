@@ -23,3 +23,113 @@ jobs:
       # the curl installer verifies against, so a stale checksum breaks installs.
       - name: Verify SHA256SUMS
         run: shasum -a 256 -c SHA256SUMS
+
+      # Guards a bug class that has bitten this script repeatedly: a function or
+      # case branch ending in "[ … ] && cmd" returns 1 whenever the test is
+      # false, so a successful run reports failure and "set -e" or "&&" callers
+      # break silently.
+      - name: No function or case branch ends in a bare conditional
+        run: |
+          python3 - <<'PY'
+          import re, sys
+          lines = open('ntfs').read().split('\n')
+          bad, prev = [], None
+          for i, l in enumerate(lines):
+              s = l.strip()
+              if s in ('}', ';;') and prev and re.match(r'^\s*(\[|[a-z_]+\s+.*)\s*&&', prev[0]):
+                  bad.append((prev[1], prev[0].strip()))
+              if s and not s.startswith('#') and s not in ('}', ';;'):
+                  prev = (l, i + 1)
+          for ln, txt in bad:
+              print(f"ntfs:{ln}: ends a block on a conditional: {txt[:70]}")
+          sys.exit(1 if bad else 0)
+          PY
+
+      # The sudoers rule is the tool's only privilege boundary. ntfs-3g mounts
+      # "<device|image_file> <dir>", so whitelisting it with unrestricted
+      # arguments is equivalent to granting root; %staff covers every macOS
+      # account including standard users who cannot otherwise sudo.
+      - name: Sudoers rule stays scoped
+        run: |
+          rule=$(sed -n '/^%admin ALL=(root) NOPASSWD:/p' ntfs)
+          [ -n "$rule" ] || { echo "sudoers rule not found or not %admin"; exit 1; }
+          case "$rule" in
+            *ntfs-3g*)     echo "must not whitelist ntfs-3g directly"; exit 1 ;;
+            *"/bin/mkdir"*) echo "must not whitelist mkdir"; exit 1 ;;
+            *"/bin/rmdir"*) echo "must not whitelist rmdir"; exit 1 ;;
+          esac
+          grep -q '^%staff' ntfs && { echo "must not target %staff"; exit 1; } || true
+
+      # A mount point is chosen by skipping existing directories, so anything
+      # still holding /Volumes/<name> pushes the drive to <name>_2. The release
+      # must therefore happen before the name is picked, not after.
+      - name: do_mount releases the existing mount before choosing a name
+        run: |
+          rel=$(grep -nF 'Releasing macOS read-only mount' ntfs | cut -d: -f1)
+          pick=$(grep -nF 'mount_point=$(get_mount_point' ntfs | cut -d: -f1)
+          [ "$rel" -lt "$pick" ] || {
+            echo "release (line $rel) must precede get_mount_point (line $pick)"; exit 1; }
+
+  # Runtime behaviour is pinned to /bin/bash (3.2) because that is what the
+  # shebang resolves to on macOS; several past bugs did not reproduce under
+  # Homebrew's bash 5.
+  behaviour:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax
+        run: |
+          /bin/bash -n ntfs
+          /bin/bash -n install.sh
+
+      - name: Read-only commands exit 0
+        run: |
+          set -e
+          export HOME="$(mktemp -d)"
+          /bin/bash ./ntfs list    >/dev/null
+          /bin/bash ./ntfs status  >/dev/null
+          /bin/bash ./ntfs doctor  >/dev/null
+          /bin/bash ./ntfs version >/dev/null
+          /bin/bash ./ntfs help    >/dev/null
+
+      - name: status survives a disk listed in both record files
+        run: |
+          export HOME="$(mktemp -d)"
+          root=$(mount | awk '$3=="/" {print $1}' | sed 's|/dev/||')
+          printf 'disk9s1\t/Volumes/Ghost\n%s\t/\n' "$root" > "$HOME/.ntfs-mounts"
+          printf '%s\t/\n' "$root" > "$HOME/.ntfs-mounts-daemon"
+          out=$(/bin/bash ./ntfs status 2>&1) || {
+            echo "ntfs status exited non-zero:"; echo "$out"; exit 1; }
+          case "$out" in *Ghost*) ;; *)
+            echo "expected the stale record in the output, got:"; echo "$out"; exit 1 ;;
+          esac
+
+      - name: empty selection does not crash the interactive prompts
+        run: |
+          export HOME="$(mktemp -d)"
+          for cmd in mount unmount eject; do
+            out=$(printf '\n' | /bin/bash ./ntfs "$cmd" 2>&1 || true)
+            case "$out" in *"unbound variable"*)
+              echo "ntfs $cmd crashed on empty input:"; echo "$out"; exit 1 ;;
+            esac
+          done
+
+      - name: sudoers rule parses
+        run: |
+          sed -n '/^%admin ALL=(root) NOPASSWD:/p' ntfs > /tmp/ntfs-sudoers-check
+          visudo -c -f /tmp/ntfs-sudoers-check
+
+      - name: mount helper rejects bad devices and mount points
+        run: |
+          for bad in "/etc" "/Volumes/../etc" "/Volumes/a/b"; do
+            if /bin/bash ./ntfs __mount-helper /dev/disk9s1 "$bad" 0 0 0 0 X 2>/dev/null; then
+              echo "helper accepted bad mount point: $bad"; exit 1
+            fi
+          done
+          if /bin/bash ./ntfs __mount-helper /tmp/evil.img /Volumes/X 0 0 0 0 X 2>/dev/null; then
+            echo "helper accepted an image file as the device"; exit 1
+          fi
+          if /bin/bash ./ntfs __rmdir-helper /Volumes/../etc 2>/dev/null; then
+            echo "rmdir helper accepted a traversal path"; exit 1
+          fi

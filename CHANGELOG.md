@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Removed
+- **GitHub Actions workflow** (`.github/workflows/ci.yml`) — added in 1.0.4 and extended in 1.1.0; this project does not use CI. The checks it ran (ShellCheck, `SHA256SUMS` verification, and the 1.1.0 regression tests) now have to be run by hand before a release:
+
+  ```
+  shellcheck ntfs install.sh
+  /bin/bash -n ntfs && /bin/bash -n install.sh
+  shasum -a 256 -c SHA256SUMS
+  ```
+
+  Regenerate `SHA256SUMS` after any change to `ntfs`, `install.sh`, or `completions/_ntfs` — a stale one breaks every curl-based install, which is the bug 1.0.4 was cut to fix.
+
 ## [1.1.0] - 2026-08-14
 
 Security release. Closes a local privilege escalation in the optional sudoers rule. Minor rather than patch: the rule now targets `%admin` instead of `%staff`, so standard (non-admin) users lose passwordless mounting, and every existing install needs a manual refresh.

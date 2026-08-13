@@ -25,7 +25,10 @@ fi
 
 # Homebrew
 if ! command -v brew &>/dev/null; then
-    info "Homebrew not found — installing..."
+    warn "Homebrew is required to install macFUSE and ntfs-3g, and is not present."
+    read -rp "Install Homebrew now? [y/N] " yn || yn=""
+    [[ "${yn:-}" =~ ^[Yy]$ ]] || die "Homebrew is required — see https://brew.sh"
+    info "Installing Homebrew..."
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     # Add brew to PATH for Apple Silicon
     eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || true)"

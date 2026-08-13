@@ -178,6 +178,8 @@ rm -f ~/.ntfs-mounts ~/.ntfs-mounts-daemon ~/.ntfs-handler-sudoers-version
 
 **Auto-mount checks every 10 seconds.** When you plug in a drive, it may take up to 10 seconds to mount automatically.
 
+**Windows filename rules apply.** Volumes mount with `windows_names`, so files whose names contain `: ? * < > |` or end in a dot or space cannot be created or copied onto the drive. This keeps the drive readable on Windows, which is usually the reason for using NTFS in the first place.
+
 ---
 
 ## License
@@ -202,7 +204,12 @@ This is a **source-available, noncommercial-only** license — not "open source"
 - **Mount sequence:** `diskutil unmount force <partition>` → `diskutil unmountDisk force <parent>` → `ntfs-3g` open. The parent unmount is required to release Disk Arbitration's hold on the block device; otherwise ntfs-3g gets `Operation not permitted`.
 - **Eject sequence:** `umount` (waits for FUSE teardown) → `diskutil unmountDisk force <parent>` (clears DA auto-remount) → `diskutil eject <parent>` (SCSI STOP UNIT)
 - **Auto-mount:** per-user LaunchAgent at `~/Library/LaunchAgents/com.ntfshandler.automount.plist`, runs in the user's session (not as root). LaunchDaemons can't open `/dev/disk*` on modern macOS without manual Full Disk Access grants; LaunchAgents inherit the user's TCC and sidestep this. Polls every `$NTFS_DAEMON_POLL_INTERVAL` seconds (default: 10, minimum: 2); retries up to `$NTFS_DAEMON_MAX_RETRIES` times (default: 3) per disk before giving up; per-disk counters reset on unplug. Log rotates when it exceeds 10 MB.
-- **Sudoers whitelist:** `/usr/local/bin/ntfs-3g, /opt/homebrew/bin/ntfs-3g, /usr/sbin/diskutil unmount force *, /usr/sbin/diskutil unmountDisk force *, /usr/sbin/diskutil eject *, /sbin/umount, /bin/mkdir -p /Volumes/*, /bin/rmdir /Volumes/*`. The agent has no tty, so every command it runs via sudo must be in this list. `diskutil` is scoped to the three unmount/eject subcommands the script actually uses — `eraseDisk`, `partitionDisk`, `apfs`, etc. still prompt for a password. `mkdir`/`rmdir` are scoped to `/Volumes/` (note: sudoers' `*` glob does match `/`, so a determined staff user could traverse with `..` — defense in depth, not a hard boundary). The remaining residual risk is that any staff user can unmount/eject any disk without a password, which can interrupt other users' work but cannot exfiltrate or destroy data. Version tracked in `~/.ntfs-handler-sudoers-version`.
+- **Sudoers whitelist:** `%admin ALL=(root) NOPASSWD: /usr/local/bin/ntfs __mount-helper *, /usr/local/bin/ntfs __rmdir-helper *, /usr/sbin/diskutil unmount force *, /usr/sbin/diskutil unmountDisk force *, /usr/sbin/diskutil eject *, /sbin/umount`. The agent has no tty, so every command it runs via sudo must be in this list.
+  - Scoped to **`%admin`, not `%staff`**: `staff` is the default primary group of every macOS account, including standard users who cannot `sudo` at all, so a `%staff` rule hands these commands to users with no other route to root.
+  - **`ntfs-3g` is deliberately not whitelisted.** It mounts `<device|image_file> <dir>`, so an entry with unrestricted arguments would let anyone covered by the rule mount attacker-supplied content over an arbitrary directory as root. Mounting instead re-enters the root-owned `/usr/local/bin/ntfs` as `__mount-helper`, which requires the device to match `/dev/diskNsM` and the mount point to match `/Volumes/<single-component>`, and builds the `-o` string itself so a caller can influence only the volume name and uid/gid. `install` refuses to write the rule if `/usr/local/bin` is not root-owned.
+  - That helper also creates and removes the mount point, so `/bin/mkdir` and `/bin/rmdir` are no longer needed — their old `/Volumes/*` scope was porous anyway, since sudoers wildcards match `/` inside command arguments.
+  - `diskutil` is scoped to the three unmount/eject subcommands the script actually uses — `eraseDisk`, `partitionDisk`, `apfs`, etc. still prompt for a password.
+  - Residual risk: any admin user can unmount and eject any disk without a password, which can interrupt other users' work. Admin users can already reach root with their own password, so this removes the prompt rather than granting new reach. Version tracked in `~/.ntfs-handler-sudoers-version`.
 - **Mount records:** `~/.ntfs-mounts` (user), `~/.ntfs-mounts-daemon` (agent) — tab-separated, atomic `mktemp` + `mv`
 - **Agent state:** `~/Library/Caches/ntfs-daemon-{seen,failures}`; logs at `~/Library/Logs/ntfs-daemon.log`
 - **Shell:** bash 3.2+; ShellCheck clean

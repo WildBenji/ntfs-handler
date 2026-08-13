@@ -17,7 +17,13 @@ DAEMON_LOG="${HOME:-/var/root}/Library/Logs/ntfs-daemon.log"
 DAEMON_OLD_PLIST="/Library/LaunchDaemons/com.ntfshandler.automount.plist"
 # Bumped whenever the sudoers whitelist changes — the daemon-install check
 # refuses to start if the user's sudoers file is from an older version.
-SUDOERS_VERSION="5"
+SUDOERS_VERSION="6"
+# Absolute path to this script. Privileged work is re-entered through it via
+# sudo (see __mount_helper), so the sudoers rule can whitelist one validated
+# entry point rather than ntfs-3g with unrestricted arguments. Only the
+# installed copy at /usr/local/bin/ntfs matches the rule; running from a
+# checkout falls back to a normal password prompt.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 if [ -t 1 ] && [ "${NO_COLOR:-}" = "" ]; then
@@ -214,28 +220,70 @@ mount_status() {
     fi
 }
 
+# ── Privileged helpers (re-entered via sudo) ─────────────────────────────────
+# ntfs-3g takes "<device|image_file> <mount_point>", so whitelisting it in
+# sudoers with unrestricted arguments would let any listed user mount
+# attacker-supplied content over an arbitrary directory as root. These helpers
+# are the only privileged entry points: they validate their arguments and build
+# the option string themselves, so a caller can influence only the volume name
+# and the uid/gid, never which options are set.
+__mount_helper() {
+    local device="$1" mount_point="$2" uid="$3" gid="$4" ro="$5" nobrowse="$6" vol_name="$7"
+    local recover="${8:-}"
+
+    [[ "$device"      =~ ^/dev/disk[0-9]+s[0-9]+$ ]] || die "Refusing: bad device '$device'"
+    [[ "$mount_point" =~ ^/Volumes/[^/]+$         ]] || die "Refusing: bad mount point '$mount_point'"
+    [[ "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$   ]] || die "Refusing: bad uid/gid"
+
+    local ntfs3g
+    ntfs3g=$(find_ntfs3g) || die "ntfs-3g not found"
+
+    # noappledouble: prevent macFUSE from creating ._ AppleDouble files which
+    # blocks Finder during move-to-trash. local removed: with it, macOS uses
+    # on-volume .Trashes/<uid>/, triggering an auto_xattr write into NTFS ADS
+    # that locks the FUSE channel indefinitely. Without local, deletes go
+    # through directly (note: deleted files don't go to Trash).
+    # Commas are stripped from the volume name so it can't introduce an option.
+    local opts="allow_other,auto_xattr,noappledouble,windows_names"
+    opts="${opts},uid=${uid},gid=${gid},volname=${vol_name//,/}"
+    [ "$ro"       = "1" ]       && opts="${opts},ro"
+    [ "$nobrowse" = "1" ]       && opts="${opts},nobrowse"
+    [ "$recover"  = "recover" ] && opts="${opts},recover"
+
+    mkdir -p "$mount_point" || die "Could not create $mount_point"
+    exec "$ntfs3g" "$device" "$mount_point" -o "$opts"
+}
+
+__rmdir_helper() {
+    local mount_point="$1"
+    [[ "$mount_point" =~ ^/Volumes/[^/]+$ ]] || die "Refusing: bad mount point '$mount_point'"
+    rmdir "$mount_point" 2>/dev/null || true
+}
+
 # ── do_mount ─────────────────────────────────────────────────────────────────
 do_mount() {
     local disk_id="$1" vol_name="$2" hidden="${3:-}" readonly="${4:-}" rec_file="${5:-$MOUNT_RECORD}"
     local device="/dev/$disk_id"
-    local mount_point ntfs3g
+    local mount_point
 
-    ntfs3g=$(find_ntfs3g) || die "ntfs-3g not found — run: ntfs doctor"
-    mount_point=$(get_mount_point "$vol_name" "$disk_id")
-
-    printf "${BLUE}=>${NC}  Mounting ${BOLD}%s${NC} (%s) → %s\n" "$vol_name" "$disk_id" "$mount_point"
-    sudo mkdir -p "$mount_point"
+    find_ntfs3g &>/dev/null || die "ntfs-3g not found — run: ntfs doctor"
 
     # If macOS has already auto-mounted the volume (read-only), kick it first.
-    # Use 'force' so it works even if Finder has it open.
+    # Use 'force' so it works even if Finder has it open. This has to happen
+    # *before* get_mount_point: while anything still holds the volume,
+    # /Volumes/<name> is occupied, so get_mount_point would skip to <name>_2
+    # even though the name is freed a moment later — and the drive shows up in
+    # Finder under the wrong name.
     if mount 2>/dev/null | grep -qE "^/dev/$disk_id on "; then
         info "Releasing macOS read-only mount..."
         if ! sudo diskutil unmount force "$disk_id" &>/dev/null; then
             err "Could not release macOS mount on $disk_id — is Finder using it?"
-            sudo rmdir "$mount_point" 2>/dev/null || true
             return 1
         fi
     fi
+
+    mount_point=$(get_mount_point "$vol_name" "$disk_id")
+    printf "${BLUE}=>${NC}  Mounting ${BOLD}%s${NC} (%s) → %s\n" "$vol_name" "$disk_id" "$mount_point"
 
     # Always release Disk Arbitration's hold on the parent disk before opening
     # the raw block device. Without this, ntfs-3g gets EPERM because DA may
@@ -248,32 +296,28 @@ do_mount() {
         sudo diskutil unmountDisk force "$parent" &>/dev/null || true
     fi
 
-    # volname sets what Finder displays; strip commas (option delimiter) from the name
-    local volname_opt="${vol_name//,/}"
-    # ntfs-3g runs as root via sudo, so without uid/gid all files appear owned
-    # by root and the user can't delete them in Finder. Map files to the
-    # invoking user. SUDO_UID is set when called via "sudo ntfs mount"; falls
-    # back to id -u when called directly.
-    local user_uid user_gid
+    # ntfs-3g runs as root, so without uid/gid all files appear owned by root and
+    # the user can't delete them in Finder. Map files to the invoking user.
+    # SUDO_UID is set when called via "sudo ntfs mount"; falls back to id -u
+    # when called directly.
+    local user_uid user_gid ro_flag=0 nb_flag=0
     user_uid="${SUDO_UID:-$(id -u)}"
     user_gid="${SUDO_GID:-$(id -g)}"
-    # noappledouble: prevent macFUSE from creating ._ AppleDouble files which
-    # blocks Finder during move-to-trash. local removed: with it, macOS uses
-    # on-volume .Trashes/<uid>/, triggering an auto_xattr write into NTFS ADS
-    # that locks the FUSE channel indefinitely. Without local, deletes go
-    # through directly (note: deleted files don't go to Trash).
-    local opts="allow_other,auto_xattr,noappledouble,windows_names,uid=${user_uid},gid=${user_gid},volname=${volname_opt}"
-    [ -n "$readonly" ] && opts="${opts},ro"
-    [ -n "$hidden" ]   && opts="${opts},nobrowse"
+    [ -n "$readonly" ] && ro_flag=1
+    [ -n "$hidden" ]   && nb_flag=1
 
-    local recover_err
-    if sudo "$ntfs3g" "$device" "$mount_point" -o "$opts" 2>/dev/null; then
+    # First attempt keeps its stderr so a genuine failure isn't masked by the
+    # recovery retry, which runs for any failure — not just a dirty volume.
+    local first_err recover_err
+    if first_err=$(sudo "$SELF" __mount-helper "$device" "$mount_point" \
+            "$user_uid" "$user_gid" "$ro_flag" "$nb_flag" "$vol_name" 2>&1 >/dev/null); then
         ok "Mounted ${BOLD}$vol_name${NC} at $mount_point"
         [ -n "$hidden" ] && printf "    ${DIM}Hidden from Finder — Go → Go to Folder (⌘⇧G) → %s${NC}\n" "$mount_point"
         record_mount "$disk_id" "$mount_point" "$rec_file" \
             || warn "Mount succeeded but tracking failed for $disk_id (status/unmount may not see it)"
         return 0
-    elif recover_err=$(sudo "$ntfs3g" "$device" "$mount_point" -o "${opts},recover" 2>&1 >/dev/null); then
+    elif recover_err=$(sudo "$SELF" __mount-helper "$device" "$mount_point" \
+            "$user_uid" "$user_gid" "$ro_flag" "$nb_flag" "$vol_name" recover 2>&1 >/dev/null); then
         warn "Mounted ${BOLD}$vol_name${NC} with recovery (volume was not safely ejected from Windows)"
         [ -n "$hidden" ] && printf "    ${DIM}Hidden from Finder — Go → Go to Folder (⌘⇧G) → %s${NC}\n" "$mount_point"
         record_mount "$disk_id" "$mount_point" "$rec_file" \
@@ -281,8 +325,10 @@ do_mount() {
         return 0
     else
         err "Failed to mount $vol_name ($disk_id)"
-        [ -n "$recover_err" ] && printf "  ntfs-3g: %s\n" "$recover_err" >&2
-        sudo rmdir "$mount_point" 2>/dev/null || true
+        [ -n "$first_err" ]   && printf "  ntfs-3g: %s\n" "$first_err" >&2
+        [ -n "$recover_err" ] && [ "$recover_err" != "$first_err" ] \
+            && printf "  ntfs-3g (recover): %s\n" "$recover_err" >&2
+        sudo "$SELF" __rmdir-helper "$mount_point" 2>/dev/null || true
         return 1
     fi
 }
@@ -295,7 +341,7 @@ do_unmount() {
     if ! mount 2>/dev/null | grep -qF " on $mount_point "; then
         warn "$mount_point is not mounted — cleaning stale record"
         record_unmount "$disk_id"
-        sudo rmdir "$mount_point" 2>/dev/null || true
+        sudo "$SELF" __rmdir-helper "$mount_point" 2>/dev/null || true
         return 0
     fi
 
@@ -306,7 +352,7 @@ do_unmount() {
     if sudo umount "$mount_point" &>/dev/null \
         || sudo diskutil unmount force "$disk_id" &>/dev/null; then
         ok "Unmounted $mount_point"
-        sudo rmdir "$mount_point" 2>/dev/null || true
+        sudo "$SELF" __rmdir-helper "$mount_point" 2>/dev/null || true
         record_unmount "$disk_id"
 
         if [ -n "$eject" ]; then
@@ -832,7 +878,12 @@ PLIST
                 removed=1
             fi
 
-            [ "$removed" -eq 0 ] && info "No daemon installed"
+            # An if, not "[ … ] && …": as the branch's last statement the
+            # latter returns 1 whenever something *was* removed, which breaks
+            # the documented "ntfs daemon uninstall && ntfs daemon install".
+            if [ "$removed" -eq 0 ]; then
+                info "No daemon installed"
+            fi
             ;;
 
         status)
@@ -878,7 +929,9 @@ __daemon_run() {
     # because bash 3.2 has no associative arrays.
     local fail_disks=() fail_counts=()
     local max_retries="${NTFS_DAEMON_MAX_RETRIES:-3}"
-    [[ "$max_retries" =~ ^[0-9]+$ ]] || max_retries=3
+    # Must be >= 1: 0 would make the give-up test true on the first pass, so
+    # every disk would be skipped silently and nothing would ever mount.
+    { [[ "$max_retries" =~ ^[0-9]+$ ]] && [ "$max_retries" -ge 1 ]; } || max_retries=3
 
     while true; do
         # Rotate log at 10 MB so a runaway error loop (or just long uptime)
@@ -1063,16 +1116,18 @@ install_sudoers() {
     printf "  Right now, every time you mount or eject a drive, macOS asks for your\n"
     printf "  password. This is because mounting requires root access.\n"
     echo
-    printf "  Saying ${BOLD}yes${NC} adds a rule to /etc/sudoers.d/ntfs-handler that lets your\n"
-    printf "  account run only the specific commands ntfs needs (ntfs-3g, diskutil\n"
-    printf "  unmount/unmountDisk/eject, umount, mkdir/rmdir under /Volumes) without\n"
-    printf "  typing a password. Everything else — including ${BOLD}diskutil erase${NC} and\n"
-    printf "  ${BOLD}diskutil partition${NC} — still prompts for your password as usual.\n"
+    printf "  Saying ${BOLD}yes${NC} adds a rule to /etc/sudoers.d/ntfs-handler that lets\n"
+    printf "  ${BOLD}admin${NC} users run only the specific commands ntfs needs (its own\n"
+    printf "  validated mount helper, plus diskutil unmount/unmountDisk/eject and\n"
+    printf "  umount) without typing a password. Everything else — including\n"
+    printf "  ${BOLD}diskutil erase${NC} and ${BOLD}diskutil partition${NC} — still prompts as usual.\n"
     echo
-    printf "  ${YELLOW}▲${NC}  ${BOLD}Security note:${NC} any admin (staff) user on this Mac will be able to\n"
-    printf "  unmount and eject any disk without a password. That can be used to\n"
-    printf "  interrupt other users' work. If you share this Mac with admins you don't\n"
-    printf "  trust, say no.\n"
+    printf "  ${YELLOW}▲${NC}  ${BOLD}Security note:${NC} any ${BOLD}admin${NC} user on this Mac will be able to unmount\n"
+    printf "  and eject any disk without a password, which can interrupt other users'\n"
+    printf "  work. Admin users can already reach root with their own password, so this\n"
+    printf "  removes the prompt rather than granting new reach — but it also means\n"
+    printf "  software running as you can use it without asking. Standard (non-admin)\n"
+    printf "  users are not covered by the rule.\n"
     echo
     printf "  Saying ${BOLD}no${NC} changes nothing — you will keep being asked for your password\n"
     printf "  when mounting or ejecting, which is the default macOS behavior.\n"
@@ -1085,13 +1140,33 @@ install_sudoers() {
         return 0
     fi
 
+    # The rule makes root run /usr/local/bin/ntfs without a password, so that
+    # path must not be writable by a non-root user.
+    if [ "$(stat -f '%u' /usr/local/bin)" -ne 0 ]; then
+        err "/usr/local/bin is not root-owned — refusing to install a passwordless rule"
+        printf "  Fix with: ${BOLD}sudo chown root:wheel /usr/local/bin${NC}\n" >&2
+        return 1
+    fi
+
     local tmp
     tmp=$(mktemp)
     cat > "$tmp" <<'EOF'
-# ntfs-handler — allow staff group to run mount/eject commands without a password.
+# ntfs-handler — allow admin users to run mount/eject commands without a password.
 # Installed by: ntfs install
 # Remove with:  sudo rm /etc/sudoers.d/ntfs-handler
-%staff ALL=(root) NOPASSWD: /usr/local/bin/ntfs-3g, /opt/homebrew/bin/ntfs-3g, /usr/sbin/diskutil unmount force *, /usr/sbin/diskutil unmountDisk force *, /usr/sbin/diskutil eject *, /sbin/umount, /bin/mkdir -p /Volumes/*, /bin/rmdir /Volumes/*
+#
+# %admin, not %staff: staff is the default primary group of *every* macOS
+# account, including standard users who cannot sudo at all, so %staff would
+# hand these commands to users who otherwise have no root access whatsoever.
+#
+# ntfs-3g is deliberately NOT listed. It mounts "<device|image_file> <dir>",
+# so an unrestricted entry would let anyone here mount attacker-supplied
+# content over any directory as root. Mounting goes through the root-owned
+# /usr/local/bin/ntfs, which validates the device and mount point first.
+# That wrapper also creates and removes the mount point, so /bin/mkdir and
+# /bin/rmdir are not needed either — their /Volumes/* scope was porous anyway,
+# since sudoers wildcards match "/" inside command arguments.
+%admin ALL=(root) NOPASSWD: /usr/local/bin/ntfs __mount-helper *, /usr/local/bin/ntfs __rmdir-helper *, /usr/sbin/diskutil unmount force *, /usr/sbin/diskutil unmountDisk force *, /usr/sbin/diskutil eject *, /sbin/umount
 EOF
 
     if ! visudo -c -f "$tmp" &>/dev/null; then
@@ -1139,7 +1214,9 @@ cmd_install() {
         info "zsh completion not found — run the curl installer or clone the full repo to get it"
     fi
 
-    install_sudoers
+    # Non-fatal: a declined or failed sudoers step still leaves a working
+    # install, just with password prompts.
+    install_sudoers || true
 
     echo
     printf "  ${BOLD}Quick start:${NC}\n"
@@ -1168,6 +1245,8 @@ cmd_help() {
     printf "  --hidden         Hide from Finder (default: visible)\n"
     printf "  --readonly, -r   Mount read-only\n"
     printf "  --all, -a        Mount all detected volumes\n\n"
+    printf "${BOLD}Note:${NC} volumes mount with Windows filename rules, so names containing\n"
+    printf "  ${BOLD}: ? * < > |${NC} or a trailing dot/space cannot be written.\n\n"
     printf "${BOLD}Daemon subcommands:${NC}\n"
     printf "  ntfs daemon install          Enable auto-mount on plug-in\n"
     printf "  ntfs daemon uninstall        Remove auto-mount agent\n"
@@ -1195,6 +1274,8 @@ case "$cmd" in
     install)            cmd_install "$@" ;;
     __daemon-run)       __daemon_run ;;
     __install-sudoers)  install_sudoers ;;
+    __mount-helper)     __mount_helper "$@" ;;
+    __rmdir-helper)     __rmdir_helper "$@" ;;
     version|-V|--version) printf "ntfs %s\n" "$VERSION" ;;
     help|-h|--help)     cmd_help ;;
     *)                  err "Unknown command: $cmd"; cmd_help; exit 1 ;;

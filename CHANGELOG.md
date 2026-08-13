@@ -1,5 +1,36 @@
 # Changelog
 
+## [1.1.0] - 2026-08-14
+
+Security release. Closes a local privilege escalation in the optional sudoers rule. Minor rather than patch: the rule now targets `%admin` instead of `%staff`, so standard (non-admin) users lose passwordless mounting, and every existing install needs a manual refresh.
+
+**Existing installs must refresh the sudoers rule** — `SUDOERS_VERSION` is now `6`. Until you do, the auto-mount agent has no whitelisted way to mount and will fail silently:
+
+```
+sudo rm /etc/sudoers.d/ntfs-handler
+ntfs install
+ntfs daemon install     # if auto-mount is in use
+```
+
+### Security
+- **The sudoers rule granted passwordless root to every local user.** It whitelisted `ntfs-3g` with unrestricted arguments for `%staff`. `ntfs-3g` mounts `<device|image_file> <mount_point>`, so anyone covered could mount an attacker-authored image over an arbitrary non-SIP directory as root — `/private/etc` is not SIP-protected. On Apple Silicon the whitelisted `/opt/homebrew/bin/ntfs-3g` is also a user-owned symlink inside a group-writable directory and could simply be re-pointed; `sudo` performs no writability check on whitelisted commands. Compounding both, `%staff` is the default primary group of *every* macOS account, including standard users with no `sudo` access at all, so the rule was never limited to admins as the docs claimed.
+- **Rule scoped to `%admin`** — was `%staff`.
+- **`ntfs-3g`, `/bin/mkdir` and `/bin/rmdir` removed from the whitelist.** Mounting now re-enters the root-owned `/usr/local/bin/ntfs` as `__mount-helper`, which validates the device (`/dev/diskNsM`), the mount point (`/Volumes/` plus one component) and the uid/gid, and assembles the `-o` string itself so no option can be injected through a crafted volume name. It also creates and removes the mount point, making the `mkdir`/`rmdir` entries unnecessary — their `/Volumes/*` scope never held, since sudoers wildcards match `/` inside command arguments.
+- **`ntfs install` refuses to write the sudoers rule if `/usr/local/bin` is not root-owned** — otherwise the rule would make root run a binary a non-root user can replace.
+
+### Fixed
+- **`ntfs daemon uninstall` returned 1 after successfully removing the agent** — the branch ended on `[ "$removed" -eq 0 ] && info …`, which is false precisely when something *was* removed. The documented `ntfs daemon uninstall && ntfs daemon install` therefore short-circuited and silently left auto-mount disabled.
+- **Drives could mount as `<name>_2`** — `get_mount_point` skips existing directories, but it ran *before* the step that releases whatever already holds the volume, so a mount point about to be freed still pushed the drive to `_2` and it appeared in Finder under the wrong name. The release now happens first.
+- **`NTFS_DAEMON_MAX_RETRIES=0` silently disabled all mounting** — the give-up test was true on the first pass, so every disk was skipped with nothing logged. Values below 1 now fall back to the default of 3.
+- **Mount failures reported the wrong error** — the first attempt's stderr was discarded and only the `recover` retry's error surfaced, even when the real cause (a missing sudoers rule, a busy device) had nothing to do with a dirty volume. Both are now reported, and the mount point is no longer created before the attempt that needs it.
+
+### Added
+- **`install.sh` asks before installing Homebrew** — it previously piped a remote installer to `bash` unprompted, unlike every other step.
+- **CI regression tests** — the sudoers rule's scope, the mount helper's argument validation, interactive prompts against empty input, `status` against a disk listed in both record files, and a structural check that no function or case branch ends on a bare conditional (the class behind several bugs above). Behavioural tests are pinned to `/bin/bash` (3.2), which is what the shebang resolves to on macOS.
+
+### Changed
+- **`ntfs help` documents the `windows_names` restriction**, and it is listed under README Limitations — filenames containing `: ? * < > |` or a trailing dot/space cannot be written.
+
 ## [1.0.4] - 2026-06-13
 
 Hardening release. Fixes a stale `SHA256SUMS` that broke every curl-based install, closes a temp-file race in the installer, makes `ntfs eject <disk>` honor an explicit untracked target, guards interactive prompts against EOF abort, and adds CI so checksum drift can't ship again.

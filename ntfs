@@ -96,7 +96,6 @@ find_ntfs_volumes() {
 
     while IFS= read -r disk_id; do
         [ -z "$disk_id" ] && continue
-        diskutil info "$disk_id" &>/dev/null || continue
 
         fs_type=$(diskutil_plist_key "$disk_id" FilesystemType)
         [[ "$fs_type" == *ntfs* ]] || continue
@@ -747,11 +746,8 @@ cmd_eject() {
 cmd_doctor() {
     printf "\n${BOLD}ntfs-handler Doctor${NC}\n\n"
 
-    if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
-        printf "  ${GREEN}✓${NC}  Bash %s\n" "$BASH_VERSION"
-    else
-        printf "  ${YELLOW}▲${NC}  Bash %s — brew install bash recommended\n" "$BASH_VERSION"
-    fi
+    # The shebang pins /bin/bash (3.2 on every macOS), which the script supports.
+    printf "  ${GREEN}✓${NC}  Bash %s\n" "$BASH_VERSION"
 
     local ntfs3g_path
     if ntfs3g_path=$(find_ntfs3g); then
@@ -828,7 +824,7 @@ cmd_daemon() {
 
             # The agent has no tty — sudo password prompts cannot succeed.
             # The version marker confirms the sudoers file matches what the
-            # current agent expects (e.g. /bin/mkdir included).
+            # current agent expects (e.g. __mount-helper whitelisted).
             local ver_file="${HOME:-/var/root}/.ntfs-handler-sudoers-version"
             local installed_ver=""
             [ -f "$ver_file" ] && installed_ver=$(cat "$ver_file" 2>/dev/null || true)

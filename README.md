@@ -213,6 +213,6 @@ This is a **source-available, noncommercial-only** license — not "open source"
   - `diskutil` is scoped to the three unmount/eject subcommands the script actually uses — `eraseDisk`, `partitionDisk`, `apfs`, etc. still prompt for a password.
   - Residual risk: the helper executes Homebrew's `ntfs-3g`, which can be replaced without root (Homebrew's prefix is user-owned, and on Apple Silicon `/opt/homebrew/bin` is writable by the `admin` group), so the rule lets any software running as an admin user become root without a password. Any admin user can also unmount and eject any disk without a password, which can interrupt other users' work. Version tracked in `~/.ntfs-handler-sudoers-version`.
 - **Mount records:** `~/.ntfs-mounts` (user), `~/.ntfs-mounts-daemon` (agent) — tab-separated, atomic `mktemp` + `mv`
-- **Agent state:** `~/Library/Caches/ntfs-daemon-{seen,failures}`; logs at `~/Library/Logs/ntfs-daemon.log`
+- **Agent state:** `~/Library/Caches/ntfs-daemon-seen` (per-disk failure counters are kept in memory and reset when the agent restarts); logs at `~/Library/Logs/ntfs-daemon.log`
 - **Shell:** bash 3.2+; ShellCheck clean
 - **Tested:** macOS Ventura 13, Sonoma 14, Sequoia 15 — Intel and Apple Silicon

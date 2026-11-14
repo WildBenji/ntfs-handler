@@ -259,7 +259,15 @@ __mount_helper() {
     [ "$nobrowse" = "1" ]       && opts="${opts},nobrowse"
     [ "$recover"  = "recover" ] && opts="${opts},recover"
 
-    mkdir -p "$mount_point" || die "Could not create $mount_point"
+    # The regex alone admits /Volumes/.., /Volumes/. and symlinks such as
+    # "/Volumes/Macintosh HD" -> /, and mkdir -p would accept any of them.
+    # Only an empty, real directory (left by a failed first attempt) may be
+    # reused: rmdir refuses ., .., symlinks, mount points and non-empty dirs.
+    if [ -e "$mount_point" ] || [ -L "$mount_point" ]; then
+        rmdir "$mount_point" 2>/dev/null \
+            || die "Refusing: $mount_point exists and is not an empty directory"
+    fi
+    mkdir "$mount_point" || die "Could not create $mount_point"
     exec "$ntfs3g" "$device" "$mount_point" -o "$opts"
 }
 

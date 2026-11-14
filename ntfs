@@ -1007,6 +1007,21 @@ __daemon_run() {
             fi
 
             local attempt=$((count + 1))
+
+            # Check the type before logging: "Microsoft Basic Data" also covers
+            # exFAT and FAT32 partitions.
+            local fs_type vol_name
+            fs_type=$(diskutil_plist_key "$disk_id" FilesystemType)
+            if [ -z "$fs_type" ]; then
+                # Not probed yet, or diskutil failed transiently. Without this
+                # the disk lands in seen_file and is ignored until replugged.
+                # Listing it as failed keeps it out of seen_file; no retry is
+                # spent, since the counters only move after a mount attempt.
+                failed_this_pass+=("$disk_id")
+                continue
+            fi
+            [[ "$fs_type" == *ntfs* ]] || continue
+
             if [ "$count" -eq 0 ]; then
                 printf '[%s] New NTFS volume: %s\n' "$(date '+%H:%M:%S')" "$disk_id"
             fi
@@ -1016,10 +1031,6 @@ __daemon_run() {
                 printf '[%s] %s already mounted rw, skipping\n' "$(date '+%H:%M:%S')" "$disk_id"
                 continue
             fi
-
-            local fs_type vol_name
-            fs_type=$(diskutil_plist_key "$disk_id" FilesystemType)
-            [[ "$fs_type" == *ntfs* ]] || continue
 
             vol_name=$(diskutil_plist_key "$disk_id" VolumeName)
             if [ -z "$vol_name" ] || [ "$vol_name" = "Not applicable" ]; then

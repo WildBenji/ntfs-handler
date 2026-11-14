@@ -9,6 +9,15 @@
 
 set -euo pipefail
 
+# Privileged work re-enters this script via sudo, which keeps the caller's PATH
+# unless secure_path is set — and macOS sets none. As root, never resolve a
+# command through it: a planted dirname/sed/mkdir would run before any argument
+# is validated.
+if [ "$EUID" -eq 0 ]; then
+    PATH=/usr/bin:/bin:/usr/sbin:/sbin
+    export PATH
+fi
+
 VERSION="1.1.0"
 MOUNT_RECORD="${HOME:-/var/root}/.ntfs-mounts"
 DAEMON_MOUNT_RECORD="${HOME:-/var/root}/.ntfs-mounts-daemon"
@@ -43,7 +52,7 @@ die()  { err "$*"; exit 1; }
 # ── Dependency Check ─────────────────────────────────────────────────────────
 check_deps() {
     local all_ok=1
-    if ! command -v ntfs-3g &>/dev/null; then
+    if ! find_ntfs3g &>/dev/null; then
         err "ntfs-3g not found"
         printf "  Install: ${BOLD}brew install gromgit/fuse/ntfs-3g-mac${NC}\n" >&2
         all_ok=0

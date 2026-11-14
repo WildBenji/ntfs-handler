@@ -12,11 +12,12 @@ You should expect an initial response within **7 days**. Fix timelines depend on
 
 ## Supported Versions
 
-Only **1.0.0 and later** are supported. Earlier 0.x versions had known security issues that 1.0.0 resolves — please upgrade.
+Only the latest release, **1.2.x**, is supported. Earlier versions have known security issues — please upgrade.
 
 | Version | Supported |
 |---------|-----------|
-| 1.1.x   | ✅        |
+| 1.2.x   | ✅        |
+| 1.1.x   | ❌ — the root helper ran commands from the caller's `PATH` and accepted `/Volumes/..` as a mount point; fixed in 1.2.0, please upgrade |
 | 1.0.x   | ❌ — local privilege escalation in the sudoers rule (below), please upgrade |
 | < 1.0   | ❌ — known issues, please upgrade |
 

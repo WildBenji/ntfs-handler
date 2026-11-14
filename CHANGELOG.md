@@ -1,6 +1,33 @@
 # Changelog
 
-## [Unreleased]
+## [1.2.0] - 2026-11-14
+
+Security release. Closes two ways for software running as an admin user to gain root through the optional passwordless rule, and fixes several mount, unmount and auto-mount bugs. Minor rather than patch: command exit statuses change, and so do the mount helper's arguments.
+
+**Existing installs: reinstall to get the fixes.** They live in `/usr/local/bin/ntfs`, so re-run the installer, or `./ntfs install` from an updated checkout. The sudoers rule itself is unchanged (`SUDOERS_VERSION` stays `6`). If auto-mount is in use, run `ntfs daemon install` afterwards so the running agent restarts on the new script.
+
+### Security
+- **The root helper ran commands from the caller's `PATH`.** `sudo` keeps the caller's `PATH` unless `secure_path` is set, and macOS sets none. The script resolves `dirname`, `sed` and `mkdir` by name, so with the passwordless rule any process running as an admin user could run its own code as root before any argument was checked. As root, `PATH` is now fixed to the system directories.
+- **Mount-point validation admitted `/Volumes/..`, `/Volumes/.` and symlinks** such as `/Volumes/Macintosh HD` → `/`, because `mkdir -p` accepted all three. The helper now creates the mount point itself and reuses an existing path only when it is an empty real directory, so the documented "`..` traversal is rejected" now holds.
+- **The docs understated what the passwordless rule grants.** The mount helper runs Homebrew's `ntfs-3g` as root, and that binary can be replaced without root (`/opt/homebrew/bin` is writable by the `admin` group). The rule therefore lets software running as an admin user become root without a password. `SECURITY.md`, the README and the install prompt now say so.
+- **Re-running the installer kept an outdated sudoers rule**, including the pre-1.1.0 rule that let every local user gain root. It now offers to replace any rule whose version this account cannot confirm.
+- **The passwordless-rule check now covers the script and its write bits.** It previously checked only that `/usr/local/bin` was root-owned. It also no longer suggests `chown`ing `/usr/local/bin` to root, which breaks Homebrew on Intel Macs.
+
+### Fixed
+- **Exit statuses** — interactive `ntfs mount` and `ntfs unmount` exited 1 after succeeding, and the direct-disk and `--all` paths exited 0 after a failure. All now exit 1 if any volume failed; a target that is not NTFS, or not tracked, counts as a failure.
+- **`ntfs mount diskNsM` force-unmounted a volume it had already mounted read-write**, then mounted it again. It now reports the volume as already mounted.
+- **The auto-mount agent ignored a partition until it was replugged** if its filesystem type came back empty — not yet probed, or a transient `diskutil` failure. It is now checked again on the next poll. The agent also no longer logs exFAT and FAT32 partitions as "New NTFS volume".
+- **`ntfs daemon install` on a running agent** failed to load it and claimed it would start on next login, while the old version kept running. A loaded agent is now restarted.
+- **The installer aborted before finishing** when auto-mount was requested after declining the passwordless rule. It now warns and completes.
+- **`ntfs doctor` no longer recommends `brew install bash`** — the shebang pins `/bin/bash` (3.2), which the script supports, so following the advice changed nothing.
+- **The README listed `~/Library/Caches/ntfs-daemon-failures`**, which has not existed since 1.0.1.
+
+### Changed
+- **The mount retry no longer claims to have recovered the volume.** `recover` is already ntfs-3g's default, so the `-o recover` retry was identical to the first attempt, and its "not safely ejected from Windows" message was wrong. It is now a plain second attempt, reported as such, and the helper no longer takes a `recover` argument.
+- **README Limitations** — auto-mount is unavailable on Intel Macs where Homebrew owns `/usr/local/bin`; manual mounting still works with a password prompt.
+
+### Known issues
+- **Mounting one partition unmounts the other volumes on the same disk.** Before opening the device, ntfs runs `diskutil unmountDisk force` on the parent disk to release Disk Arbitration's hold (see 0.5.0). On a drive with several partitions, that also unmounts the others, including ones ntfs mounted moments earlier. Changing it needs testing on a real multi-partition drive.
 
 ### Removed
 - **GitHub Actions workflow** (`.github/workflows/ci.yml`) — added in 1.0.4 and extended in 1.1.0; this project does not use CI. The checks it ran (ShellCheck, `SHA256SUMS` verification, and the 1.1.0 regression tests) now have to be run by hand before a release:

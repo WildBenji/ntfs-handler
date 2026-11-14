@@ -136,7 +136,9 @@ ntfs __install-sudoers || true
 echo
 read -rp "Enable auto-mount? NTFS drives will mount automatically when plugged in. [y/N] " yn || yn=""
 if [[ "${yn:-}" =~ ^[Yy]$ ]]; then
-    ntfs daemon install
+    # Non-fatal: it needs the password-free rule, which may have been declined
+    # above, and ntfs itself is installed either way.
+    ntfs daemon install || warn "Auto-mount was not enabled — see above, then run: ntfs daemon install"
 fi
 
 echo

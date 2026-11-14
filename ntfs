@@ -1198,13 +1198,18 @@ install_sudoers() {
         return 0
     fi
 
-    # The rule makes root run /usr/local/bin/ntfs without a password, so that
-    # path must not be writable by a non-root user.
-    if [ "$(stat -f '%u' /usr/local/bin)" -ne 0 ]; then
-        err "/usr/local/bin is not root-owned — refusing to install a passwordless rule"
-        printf "  Fix with: ${BOLD}sudo chown root:wheel /usr/local/bin${NC}\n" >&2
-        return 1
-    fi
+    # The rule makes root run /usr/local/bin/ntfs without a password, so
+    # neither the script nor its directory may be writable by anyone but root.
+    local p owner mode
+    for p in /usr/local/bin /usr/local/bin/ntfs; do
+        read -r owner mode < <(stat -f '%u %Lp' "$p" 2>/dev/null || echo "x 0")
+        if [ "$owner" != 0 ] || [ $(( 0$mode & 022 )) -ne 0 ]; then
+            err "$p is writable by a non-root user — refusing to install a passwordless rule"
+            printf "  On Intel Macs Homebrew owns /usr/local/bin; don't chown it to root, that breaks Homebrew.\n" >&2
+            printf "  Manual mounting still works with a password prompt; only auto-mount needs the rule.\n" >&2
+            return 1
+        fi
+    done
 
     local tmp
     tmp=$(mktemp)

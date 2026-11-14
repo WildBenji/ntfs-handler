@@ -170,6 +170,8 @@ rm -f ~/.ntfs-mounts ~/.ntfs-mounts-daemon ~/.ntfs-handler-sudoers-version
 
 **One-time macFUSE approval required.** macOS treats it as a third-party system extension and requires manual approval followed by a reboot. You only do this once.
 
+**Auto-mount needs a root-owned `/usr/local/bin`.** The optional password-free rule (which auto-mount requires) is refused when `/usr/local/bin` or `/usr/local/bin/ntfs` is writable by a non-root user. On Intel Macs Homebrew owns `/usr/local/bin`, so auto-mount is unavailable there; manual mounting works with a password prompt.
+
 **BitLocker-encrypted drives are not supported.** If your drive is encrypted with BitLocker (a Windows feature), this tool can't access it.
 
 **No graphical interface.** Everything is done in Terminal.

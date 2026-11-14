@@ -513,7 +513,7 @@ cmd_mount() {
 
     # Direct disk IDs specified on command line
     if [ ${#direct_disks[@]} -gt 0 ]; then
-        local target found i
+        local target found i failed=0
         for target in "${direct_disks[@]}"; do
             found=0
             for i in "${!NTFS_DISKS[@]}"; do
@@ -523,15 +523,20 @@ cmd_mount() {
                     if [ "$(mount_status "$target")" = "rw" ]; then
                         info "${NTFS_VOLNAMES[$i]} ($target) is already mounted read-write"
                     else
-                        # do_mount prints its own error; swallow rc so set -e doesn't
-                        # abort the loop (we still want to process the remaining targets).
-                        do_mount "$target" "${NTFS_VOLNAMES[$i]}" "$hidden" "$readonly" || true
+                        # do_mount prints its own error; count rather than abort
+                        # so the remaining targets are still processed.
+                        do_mount "$target" "${NTFS_VOLNAMES[$i]}" "$hidden" "$readonly" \
+                            || failed=$((failed+1))
                     fi
                     found=1; break
                 fi
             done
-            [ "$found" -eq 0 ] && err "Not an NTFS volume: $target"
+            if [ "$found" -eq 0 ]; then
+                err "Not an NTFS volume: $target"
+                failed=$((failed+1))
+            fi
         done
+        [ "$failed" -eq 0 ] || return 1
         return 0
     fi
 
@@ -549,7 +554,7 @@ cmd_mount() {
         echo
         [ $mounted -gt 0 ] && ok "$mounted volume(s) mounted"
         [ $skipped -gt 0 ] && info "$skipped already mounted read-write — nothing to do"
-        [ $failed  -gt 0 ] && warn "$failed volume(s) failed"
+        if [ $failed -gt 0 ]; then warn "$failed volume(s) failed"; return 1; fi
         return 0
     fi
 
@@ -597,7 +602,8 @@ cmd_mount() {
 
     echo
     [ $mounted -gt 0 ] && ok "$mounted volume(s) mounted"
-    [ $failed  -gt 0 ] && warn "$failed volume(s) failed"
+    if [ $failed -gt 0 ]; then warn "$failed volume(s) failed"; return 1; fi
+    return 0
 }
 
 # ── cmd: unmount ──────────────────────────────────────────────────────────────
@@ -629,12 +635,12 @@ cmd_unmount() {
     # Direct disk IDs — handled before the empty-record menu so an explicit
     # target is honored even when it isn't (or is no longer) tracked.
     if [ ${#direct_disks[@]} -gt 0 ]; then
-        local target found i
+        local target found i failed=0
         for target in "${direct_disks[@]}"; do
             found=0
             for i in "${!REC_DISKS[@]}"; do
                 if [ "${REC_DISKS[$i]}" = "$target" ]; then
-                    do_unmount "$target" "${REC_MOUNTS[$i]}" "$eject" || true
+                    do_unmount "$target" "${REC_MOUNTS[$i]}" "$eject" || failed=$((failed+1))
                     found=1; break
                 fi
             done
@@ -645,9 +651,11 @@ cmd_unmount() {
                     eject_disk_direct "$target"
                 else
                     err "Not in mount record: $target"
+                    failed=$((failed+1))
                 fi
             fi
         done
+        [ "$failed" -eq 0 ] || return 1
         return 0
     fi
 
@@ -727,7 +735,8 @@ cmd_unmount() {
 
     echo
     [ $unmounted -gt 0 ] && ok "$unmounted volume(s) unmounted"
-    [ $failed    -gt 0 ] && warn "$failed volume(s) failed"
+    if [ $failed -gt 0 ]; then warn "$failed volume(s) failed"; return 1; fi
+    return 0
 }
 
 # ── cmd: eject ────────────────────────────────────────────────────────────────

@@ -238,7 +238,6 @@ mount_status() {
 # and the uid/gid, never which options are set.
 __mount_helper() {
     local device="$1" mount_point="$2" uid="$3" gid="$4" ro="$5" nobrowse="$6" vol_name="$7"
-    local recover="${8:-}"
 
     [[ "$device"      =~ ^/dev/disk[0-9]+s[0-9]+$ ]] || die "Refusing: bad device '$device'"
     [[ "$mount_point" =~ ^/Volumes/[^/]+$         ]] || die "Refusing: bad mount point '$mount_point'"
@@ -255,9 +254,8 @@ __mount_helper() {
     # Commas are stripped from the volume name so it can't introduce an option.
     local opts="allow_other,auto_xattr,noappledouble,windows_names"
     opts="${opts},uid=${uid},gid=${gid},volname=${vol_name//,/}"
-    [ "$ro"       = "1" ]       && opts="${opts},ro"
-    [ "$nobrowse" = "1" ]       && opts="${opts},nobrowse"
-    [ "$recover"  = "recover" ] && opts="${opts},recover"
+    [ "$ro"       = "1" ] && opts="${opts},ro"
+    [ "$nobrowse" = "1" ] && opts="${opts},nobrowse"
 
     # The regex alone admits /Volumes/.., /Volumes/. and symlinks such as
     # "/Volumes/Macintosh HD" -> /, and mkdir -p would accept any of them.
@@ -323,9 +321,10 @@ do_mount() {
     [ -n "$readonly" ] && ro_flag=1
     [ -n "$hidden" ]   && nb_flag=1
 
-    # First attempt keeps its stderr so a genuine failure isn't masked by the
-    # recovery retry, which runs for any failure — not just a dirty volume.
-    local first_err recover_err
+    # ntfs-3g replays a dirty volume's journal by default (its "recover"
+    # option), so a second attempt only helps with transient failures. Each
+    # attempt keeps its stderr so the real error is reported.
+    local first_err retry_err
     if first_err=$(sudo "$SELF" __mount-helper "$device" "$mount_point" \
             "$user_uid" "$user_gid" "$ro_flag" "$nb_flag" "$vol_name" 2>&1 >/dev/null); then
         ok "Mounted ${BOLD}$vol_name${NC} at $mount_point"
@@ -333,9 +332,9 @@ do_mount() {
         record_mount "$disk_id" "$mount_point" "$rec_file" \
             || warn "Mount succeeded but tracking failed for $disk_id (status/unmount may not see it)"
         return 0
-    elif recover_err=$(sudo "$SELF" __mount-helper "$device" "$mount_point" \
-            "$user_uid" "$user_gid" "$ro_flag" "$nb_flag" "$vol_name" recover 2>&1 >/dev/null); then
-        warn "Mounted ${BOLD}$vol_name${NC} with recovery (volume was not safely ejected from Windows)"
+    elif retry_err=$(sudo "$SELF" __mount-helper "$device" "$mount_point" \
+            "$user_uid" "$user_gid" "$ro_flag" "$nb_flag" "$vol_name" 2>&1 >/dev/null); then
+        ok "Mounted ${BOLD}$vol_name${NC} at $mount_point (second attempt)"
         [ -n "$hidden" ] && printf "    ${DIM}Hidden from Finder — Go → Go to Folder (⌘⇧G) → %s${NC}\n" "$mount_point"
         record_mount "$disk_id" "$mount_point" "$rec_file" \
             || warn "Mount succeeded but tracking failed for $disk_id (status/unmount may not see it)"
@@ -343,8 +342,8 @@ do_mount() {
     else
         err "Failed to mount $vol_name ($disk_id)"
         [ -n "$first_err" ]   && printf "  ntfs-3g: %s\n" "$first_err" >&2
-        [ -n "$recover_err" ] && [ "$recover_err" != "$first_err" ] \
-            && printf "  ntfs-3g (recover): %s\n" "$recover_err" >&2
+        [ -n "$retry_err" ] && [ "$retry_err" != "$first_err" ] \
+            && printf "  ntfs-3g (retry): %s\n" "$retry_err" >&2
         sudo "$SELF" __rmdir-helper "$mount_point" 2>/dev/null || true
         return 1
     fi

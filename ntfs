@@ -518,9 +518,15 @@ cmd_mount() {
             found=0
             for i in "${!NTFS_DISKS[@]}"; do
                 if [ "${NTFS_DISKS[$i]}" = "$target" ]; then
-                    # do_mount prints its own error; swallow rc so set -e doesn't
-                    # abort the loop (we still want to process the remaining targets).
-                    do_mount "$target" "${NTFS_VOLNAMES[$i]}" "$hidden" "$readonly" || true
+                    # Same rule as the menu and --all: without it do_mount would
+                    # "release" the live read-write mount with unmount force.
+                    if [ "$(mount_status "$target")" = "rw" ]; then
+                        info "${NTFS_VOLNAMES[$i]} ($target) is already mounted read-write"
+                    else
+                        # do_mount prints its own error; swallow rc so set -e doesn't
+                        # abort the loop (we still want to process the remaining targets).
+                        do_mount "$target" "${NTFS_VOLNAMES[$i]}" "$hidden" "$readonly" || true
+                    fi
                     found=1; break
                 fi
             done

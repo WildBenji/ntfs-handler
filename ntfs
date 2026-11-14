@@ -859,9 +859,17 @@ cmd_daemon() {
 </plist>
 PLIST
 
-            launchctl bootstrap "gui/$(id -u)" "$DAEMON_PLIST" 2>/dev/null \
-                || launchctl load "$DAEMON_PLIST" 2>/dev/null \
-                || warn "Could not start agent now — it will start on next login"
+            # bootstrap fails on an already-loaded agent, which would keep
+            # running the previous version of this script; restart it instead.
+            local target; target="gui/$(id -u)/com.ntfshandler.automount"
+            if launchctl print "$target" &>/dev/null; then
+                launchctl kickstart -k "$target" 2>/dev/null \
+                    || warn "Could not restart the running agent — log out and back in to load this version"
+            else
+                launchctl bootstrap "gui/$(id -u)" "$DAEMON_PLIST" 2>/dev/null \
+                    || launchctl load "$DAEMON_PLIST" 2>/dev/null \
+                    || warn "Could not start agent now — it will start on next login"
+            fi
             ok "Auto-mount agent installed"
             info "Logs: tail -f $DAEMON_LOG"
             ;;
@@ -1117,14 +1125,17 @@ install_sudoers() {
     if [ -f "$sudoers_file" ]; then
         local installed_ver=""
         [ -f "$ver_file" ] && installed_ver=$(cat "$ver_file" 2>/dev/null || true)
-        if [ "$installed_ver" != "$SUDOERS_VERSION" ]; then
-            warn "Sudoers rule is from an older version (need v${SUDOERS_VERSION}, have v${installed_ver:-?})"
-            printf "  Refresh it: ${BOLD}sudo rm /etc/sudoers.d/ntfs-handler && ntfs install${NC}\n" >&2
+        if [ "$installed_ver" = "$SUDOERS_VERSION" ]; then
+            ok "Passwordless mounting already configured ($sudoers_file)"
+            info "To remove it: sudo rm $sudoers_file"
             return 0
         fi
-        ok "Passwordless mounting already configured ($sudoers_file)"
-        info "To remove it: sudo rm $sudoers_file"
-        return 0
+        # The file is root-only, so its version can't be read here — only this
+        # account's marker. A missing or older marker may be an upgrade from a
+        # pre-1.1.0 rule (a local privilege escalation) or just another admin
+        # on this Mac; either way, offer to replace it with the current rule.
+        warn "Existing rule may be outdated (need v${SUDOERS_VERSION}, this account's marker says v${installed_ver:-?})"
+        printf "  Rules from before 1.1.0 let any local user gain root — replacing it is recommended.\n" >&2
     fi
 
     echo
@@ -1153,7 +1164,11 @@ install_sudoers() {
     echo
     read -rp "  Skip password prompts for ntfs? [y/N] " yn || yn=""
     if [[ ! "${yn:-}" =~ ^[Yy]$ ]]; then
-        info "Skipped — you will be prompted for your password when mounting/ejecting"
+        if [ -f "$sudoers_file" ]; then
+            warn "Kept the existing rule unchanged. To remove it: sudo rm $sudoers_file"
+        else
+            info "Skipped — you will be prompted for your password when mounting/ejecting"
+        fi
         return 0
     fi
 

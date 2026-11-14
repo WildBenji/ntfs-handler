@@ -13,6 +13,9 @@
 
   Regenerate `SHA256SUMS` after any change to `ntfs`, `install.sh`, or `completions/_ntfs` — a stale one breaks every curl-based install, which is the bug 1.0.4 was cut to fix.
 
+### Added
+- **`test.sh`** — runs the checks above plus behaviour tests against stub `sudo`/`diskutil`/`mount`/`ntfs-3g` (mount-helper argument validation, exit statuses, leaving a read-write mount alone). Nothing is mounted and nothing runs as root. Run `bash test.sh` before a release.
+
 ## [1.1.0] - 2026-08-14
 
 Security release. Closes a local privilege escalation in the optional sudoers rule. Minor rather than patch: the rule now targets `%admin` instead of `%staff`, so standard (non-admin) users lose passwordless mounting, and every existing install needs a manual refresh.

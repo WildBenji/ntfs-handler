@@ -1176,15 +1176,15 @@ install_sudoers() {
     printf "  umount) without typing a password. Everything else — including\n"
     printf "  ${BOLD}diskutil erase${NC} and ${BOLD}diskutil partition${NC} — still prompts as usual.\n"
     echo
-    printf "  ${YELLOW}▲${NC}  ${BOLD}Security note:${NC} any ${BOLD}admin${NC} user on this Mac will be able to unmount\n"
-    printf "  and eject any disk without a password, which can interrupt other users'\n"
-    printf "  work. Admin users can already reach root with their own password, so this\n"
-    printf "  removes the prompt rather than granting new reach — but it also means\n"
-    printf "  software running as you can use it without asking. Standard (non-admin)\n"
-    printf "  users are not covered by the rule.\n"
+    printf "  ${YELLOW}▲${NC}  ${BOLD}Security note:${NC} the mount helper runs Homebrew's ntfs-3g as root,\n"
+    printf "  and Homebrew's files can be replaced without a password. In practice this\n"
+    printf "  lets ${BOLD}any software running as an admin user become root without asking${NC}.\n"
+    printf "  Any admin user will also be able to unmount and eject any disk without a\n"
+    printf "  password. Standard (non-admin) users are not covered by the rule.\n"
     echo
     printf "  Saying ${BOLD}no${NC} changes nothing — you will keep being asked for your password\n"
-    printf "  when mounting or ejecting, which is the default macOS behavior.\n"
+    printf "  when mounting or ejecting, which is the default macOS behavior. Only\n"
+    printf "  auto-mount (ntfs daemon install) needs this rule.\n"
     echo
     printf "  ${DIM}This is completely reversible: sudo rm /etc/sudoers.d/ntfs-handler${NC}\n"
     echo
